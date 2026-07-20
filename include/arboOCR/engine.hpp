@@ -15,7 +15,17 @@ namespace arbo::ocr {
 
 struct EngineConfig {
     std::string ocrVersion = "PP-OCRv6";
-    std::string modelType = "tiny";
+    // Selects the RECOGNIZER model only ("<ocrVersion>_rec_<modelType>.onnx")
+    // — the detector is always loaded from "<ocrVersion>_det.onnx" (no size
+    // suffix), so this does not affect detection. Measured on PP-OCRv6
+    // against the bundled sample receipt: "medium" recognizer fixed real
+    // character errors "tiny" made (e.g. "Melavwai" -> "Melawai",
+    // "Atasnama" -> "Atas nama") at ~5x the CPU latency (tiny ~750ms ->
+    // medium ~3.9s on a Jetson Nano CPU fallback; TensorRT/CUDA narrow this
+    // gap significantly). "small" is a middle ground if "medium" is too
+    // slow for your latency budget. See README's "Model size trade-off"
+    // section for the full comparison.
+    std::string modelType = "medium";
     float detBoxThresh = 0.5f;
     float detThresh = 0.3f;
     float detUnclipRatio = 1.6f;

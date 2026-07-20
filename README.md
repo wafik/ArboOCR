@@ -29,7 +29,7 @@ int main() {
 Or try the bundled CLI without writing any C++:
 
 ```bash
-./arboocr_demo --image page.jpg --models-dir models --model-type tiny
+./arboocr_demo --image page.jpg --models-dir models
 ```
 
 ## Build
@@ -91,10 +91,10 @@ arboOCR needs PP-OCRv6 ONNX files in `modelsDir`, named:
 
 ```
 models/
-├── PP-OCRv6_det.onnx              text detection
-├── PP-OCRv6_cls.onnx              angle classification (only if useAngleCls)
-├── PP-OCRv6_rec_tiny.onnx         text recognition (tiny | small | medium)
-└── PP-OCRv6_rec_tiny_dict.txt     char dict (only if not embedded in ONNX metadata)
+├── PP-OCRv6_det.onnx                text detection (one file — no size variants)
+├── PP-OCRv6_cls.onnx                angle classification (only if useAngleCls)
+├── PP-OCRv6_rec_medium.onnx         text recognition (tiny | small | medium — see below)
+└── PP-OCRv6_rec_medium_dict.txt     char dict (only if not embedded in ONNX metadata)
 ```
 
 Two ways to provide them:
@@ -106,11 +106,43 @@ Two ways to provide them:
    ```cpp
    arbo::ocr::downloadOcrModels(
        "https://your-host.example/models/PP-OCRv6/", // baseUrl (you supply)
-       "PP-OCRv6", "tiny", "models");
+       "PP-OCRv6", "medium", "models");
    ```
 
    arboOCR ships **no** default download URL — PP-OCR model hosting URLs are
    not stable, so the caller decides the source.
+
+### Model size trade-off (`EngineConfig::modelType`)
+
+`modelType` (`tiny` | `small` | `medium`) selects the **recognizer** size
+only — the detector is always the single `PP-OCRv6_det.onnx` file, no size
+variant exists for it. Measured on the bundled sample receipt
+(`tests/fixtures/test_images/`), CPU backend, Jetson Nano:
+
+| modelType | Recognizer file size | Latency | Sample errors |
+|---|---|---|---|
+| `tiny` (old default) | 4.3MB | ~750ms | "Melavwai" instead of "Melawai", "Atasnama" instead of "Atas nama" |
+| `medium` (**current default**) | 73MB | ~3.9s | both fixed, no new errors introduced |
+
+`tiny` genuinely misreads characters under real-world noise (scan artifacts,
+low contrast); `medium` fixed every misread we found in that pass without
+introducing new ones, at roughly 5x the CPU latency. TensorRT/CUDA narrow
+that latency gap significantly (the `tiny` config alone dropped from ~750ms
+CPU to ~360ms TensorRT in our Jetson tests) — worth re-measuring
+`medium` under TensorRT/CUDA for your own hardware if 3.9s CPU is too slow.
+
+We also tried the analogous swap on the **detector** (`PP-OCRv6_det_medium.onnx`
+in place of the tiny/default det file) and got a *worse* result: 6x slower
+and *more* misreads, not fewer — the larger detector's box geometry didn't
+match well with the tiny recognizer we paired it with. Net takeaway: if you
+want to try a different size, change `modelType` (recognizer), not the
+detector file.
+
+Pick `tiny` if you need the fastest CPU turnaround and can tolerate
+occasional misreads (or you're running under TensorRT/CUDA where the gap
+matters less); pick `medium` (default) for the most accurate output; `small`
+is an untested middle ground worth trying if `medium` is too slow for your
+budget.
 
 ## API
 
