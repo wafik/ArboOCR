@@ -113,9 +113,8 @@ bool Recognizer::loadKeysFromModelMetadata() {
     return true;
 }
 
-RawTextLine Recognizer::scoreToTextLine(const std::vector<float>& outputData, size_t h, size_t w) const {
+RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w) const {
     auto keySize = keys_.size();
-    auto dataSize = outputData.size();
     std::string text;
     std::vector<float> scores;
     size_t lastIndex = 0;
@@ -127,8 +126,8 @@ RawTextLine Recognizer::scoreToTextLine(const std::vector<float>& outputData, si
                                                // RapidOcrOnnx's `dataSize - 1`, which can
                                                // under-read the last timestep by one class)
         if (start >= stop) continue;
-        size_t maxIndex = argmax(outputData.begin() + start, outputData.begin() + stop);
-        float maxValue = *std::max_element(outputData.begin() + start, outputData.begin() + stop);
+        size_t maxIndex = argmax(outputData + start, outputData + stop);
+        float maxValue = *std::max_element(outputData + start, outputData + stop);
 
         if (maxIndex > 0 && maxIndex < keySize && !(i > 0 && maxIndex == lastIndex)) {
             scores.push_back(maxValue);
@@ -160,6 +159,18 @@ std::vector<float> Recognizer::buildBatchTensor(const std::vector<cv::Mat>& resi
 
     for (int b = 0; b < batchSize; b++) {
         const cv::Mat& crop = resizedCrops[b];
+        // Precondition: every crop must already be resized to exactly
+        // kDstHeight rows and no wider than batchWidth — getTextLines()
+        // guarantees this (it's the only real caller), but this is a
+        // public-facing method via buildBatchTensorForTest() for testing,
+        // so a violation is guarded rather than trusted: substractMeanNormalize's
+        // output is sized crop.cols*crop.rows, and the row-copy loop below
+        // indexes it assuming crop.rows == kDstHeight — get that wrong and
+        // it's a heap out-of-bounds read, not just wrong output. Skipping
+        // leaves this crop's slot as zero-padding (silent, not a crash).
+        if (crop.rows != kDstHeight || crop.cols > batchWidth || crop.cols <= 0) {
+            continue;
+        }
         auto normalized = substractMeanNormalize(crop, meanValues_, normValues_); // CHW, row-major, crop.cols wide
         size_t normPlaneSize = static_cast<size_t>(crop.cols) * kDstHeight;
         float* dst = batchInput.data() + b * cropStride;
@@ -225,8 +236,12 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
     for (int64_t b = 0; b < outBatch && b < static_cast<int64_t>(resizedCrops.size()); b++) {
         int64_t offset = b * perItemCount;
         if (offset + perItemCount > outCount) break; // guard: short buffer
-        std::vector<float> rowData(raw + offset, raw + offset + perItemCount);
-        results.push_back(scoreToTextLine(rowData, static_cast<size_t>(timeSteps), static_cast<size_t>(numClasses)));
+        // Decode straight from this item's slice of the shared output
+        // buffer — no per-item copy (numClasses is in the thousands for
+        // PP-OCR's CJK dictionaries, so this is a real cost on the hot
+        // path, not just style).
+        results.push_back(scoreToTextLine(raw + offset, static_cast<size_t>(perItemCount),
+                                           static_cast<size_t>(timeSteps), static_cast<size_t>(numClasses)));
     }
     while (results.size() < resizedCrops.size()) {
         results.push_back({"", {}}); // guard: model returned fewer rows than requested
@@ -237,18 +252,28 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
 std::vector<RawTextLine> Recognizer::runBatch(const std::vector<cv::Mat>& resizedCrops, int batchWidth) {
     try {
         return runBatchInference(resizedCrops, batchWidth);
-    } catch (const Ort::Exception&) {
+    } catch (const std::exception&) {
         // Fallback for a non-standard custom model that doesn't accept
         // dynamic batch size (every official PP-OCR model does — see
         // TENSORRT_ENGINE_PORT_PLAN.md's documented rec profile,
         // opt=(6,3,48,320) — this path exists for robustness against
         // arbitrary user-supplied models, not because official models hit it).
+        // Catches std::exception (not just Ort::Exception): runBatchInference
+        // also runs buildBatchTensor(), pure computation that could throw
+        // std::bad_alloc or similar — without this, such an error would
+        // skip this per-crop fallback and fall through to the whole-page
+        // catch in Engine::recognize(), discarding every line on the page
+        // instead of just the crops in this one batch.
         std::vector<RawTextLine> results;
         results.reserve(resizedCrops.size());
         for (auto& crop : resizedCrops) {
-            std::vector<cv::Mat> single{crop};
-            auto oneResult = runBatchInference(single, crop.cols);
-            results.push_back(oneResult.empty() ? RawTextLine{"", {}} : oneResult.front());
+            try {
+                std::vector<cv::Mat> single{crop};
+                auto oneResult = runBatchInference(single, crop.cols);
+                results.push_back(oneResult.empty() ? RawTextLine{"", {}} : oneResult.front());
+            } catch (const std::exception&) {
+                results.push_back({"", {}}); // guard: this one crop failed even alone, skip it
+            }
         }
         return results;
     }

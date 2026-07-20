@@ -167,3 +167,37 @@ TEST_CASE("buildBatchTensor: multiple crops of different widths occupy independe
         }
     }
 }
+
+TEST_CASE("buildBatchTensor: a crop with the wrong height is skipped, not an out-of-bounds read") {
+    // buildBatchTensor's row-copy math assumes every crop has exactly
+    // kDstHeight (48) rows — getTextLines() guarantees this via its resize
+    // step, but buildBatchTensorForTest() is a public test seam that can be
+    // called directly with anything. A crop with the wrong height used to
+    // have no guard here at all: substractMeanNormalize()'s output is sized
+    // crop.cols*crop.rows, but the row-copy loop indexed it assuming
+    // crop.rows==kDstHeight — a mismatch would silently read past the end
+    // of that buffer. This asserts the guard skips such a crop cleanly
+    // (leaving its slot as zero-padding) instead of crashing/corrupting.
+    Recognizer net;
+    int batchWidth = 32;
+    cv::Mat wrongHeightCrop = solidCrop(32, 24, 255); // 24 rows, not 48
+    std::vector<float> buffer;
+    CHECK_NOTHROW(buffer = net.buildBatchTensorForTest({wrongHeightCrop}, batchWidth));
+    REQUIRE(buffer.size() == static_cast<size_t>(1 * 3 * 48 * batchWidth));
+    // Skipped crop's entire slot should be untouched zero-padding.
+    for (float v : buffer) {
+        CHECK(v == doctest::Approx(0.0f));
+    }
+}
+
+TEST_CASE("buildBatchTensor: a crop wider than batchWidth is skipped, not an out-of-bounds write") {
+    Recognizer net;
+    int batchWidth = 16;
+    cv::Mat tooWideCrop = solidCrop(32, 48, 255); // wider than batchWidth
+    std::vector<float> buffer;
+    CHECK_NOTHROW(buffer = net.buildBatchTensorForTest({tooWideCrop}, batchWidth));
+    REQUIRE(buffer.size() == static_cast<size_t>(1 * 3 * 48 * batchWidth));
+    for (float v : buffer) {
+        CHECK(v == doctest::Approx(0.0f));
+    }
+}

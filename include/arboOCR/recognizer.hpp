@@ -91,7 +91,7 @@ public:
     /// test_recognizer.cpp can validate decode correctness without a real
     /// model.
     RawTextLine decodeForTest(const std::vector<float>& outputData, size_t h, size_t w) const {
-        return scoreToTextLine(outputData, h, w);
+        return scoreToTextLine(outputData.data(), outputData.size(), h, w);
     }
 
     /// Test-only entry point: build the padded, normalized batch tensor
@@ -106,7 +106,11 @@ public:
     }
 
 private:
-    RawTextLine scoreToTextLine(const std::vector<float>& outputData, size_t h, size_t w) const;
+    /// `outputData`/`dataSize` is a raw pointer+size rather than a
+    /// std::vector& so callers slicing one batch item's rows out of a
+    /// larger ONNXRuntime output buffer (see runBatchInference()) don't
+    /// need to materialize a per-item copy just to call this.
+    RawTextLine scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w) const;
 
     /// Builds the padded, normalized [batchSize, 3, kDstHeight, batchWidth]
     /// CHW tensor buffer from already-resized crops: each crop is
@@ -115,6 +119,15 @@ private:
     /// getTextLines() doc comment for why this differs from padding with a
     /// pre-normalization pixel value). Pure/stateless — no ONNXRuntime
     /// session involved, which is what makes it independently testable.
+    ///
+    /// Precondition per crop: exactly kDstHeight rows, and cols <=
+    /// batchWidth. getTextLines() (the only real caller) always resizes to
+    /// kDstHeight and caps width at batchWidth before calling this, so the
+    /// precondition holds there — but this method is also reachable
+    /// directly via the public buildBatchTensorForTest() test seam, so a
+    /// violating crop is skipped (left as zero-padding) rather than trusted:
+    /// getting this wrong would otherwise read past the end of
+    /// substractMeanNormalize()'s crop.cols*crop.rows-sized output buffer.
     std::vector<float> buildBatchTensor(const std::vector<cv::Mat>& resizedCrops, int batchWidth) const;
 
     /// Builds the batch tensor, runs ONE Session::Run() call, and CTC-decodes
