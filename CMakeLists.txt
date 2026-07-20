@@ -60,6 +60,7 @@ endif()
 # Tests.
 enable_testing()
 add_executable(arboocr_tests
+    tests/test_main.cpp
     tests/test_ocr_utils.cpp
     tests/test_detector.cpp
     tests/test_classifier.cpp
