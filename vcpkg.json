@@ -1,0 +1,11 @@
+{
+  "name": "arboocr",
+  "version": "0.1.0",
+  "dependencies": [
+    "onnxruntime",
+    "opencv",
+    "curl",
+    "doctest",
+    "cxxopts"
+  ]
+}

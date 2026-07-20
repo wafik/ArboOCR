@@ -1,0 +1,28 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-x64",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-x64",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "linux-x64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-x64",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "jetson",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/jetson",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ARBOOCR_USE_SYSTEM_DEPS": "ON"
+      }
+    }
+  ]
+}
