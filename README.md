@@ -229,6 +229,29 @@ new errors introduced. We also tried upsizing the *detector* instead
 recognizer it was paired with. If you want better accuracy, change
 `modelType` (the recognizer), not the detector file.
 
+### Languages (PP-OCRv6)
+
+Default PP-OCRv6 recognition models are **already multi-language** in a single
+ONNX file (PaddleOCR: medium/small cover 50 languages including Chinese,
+English, Japanese, and 46 Latin-script languages; tiny is similar without
+Japanese). arboOCR has **no `language` config** — load the default models and
+you get that coverage.
+
+For scripts outside the model’s training set, or a fine-tuned ONNX, point
+explicit paths at your files (empty = default names under `modelsDir`):
+
+```cpp
+arbo::ocr::EngineConfig cfg;
+cfg.modelsDir = "models";
+cfg.recModelPath = "models/custom_rec.onnx";
+cfg.dictPath = "models/custom_dict.txt"; // only if ONNX metadata has no character list
+// cfg.detModelPath / cfg.clsModelPath likewise if needed
+```
+
+Helpers: `resolveModelPaths(cfg)` returns the four resolved paths without
+checking that files exist. Custom downloads: use `downloadFile(url, dest)`
+into those paths; `downloadOcrModels` still writes the default flat names only.
+
 ## API Reference
 
 ```cpp
@@ -260,6 +283,10 @@ struct EngineConfig {
     bool        useFp16      = true;      // TensorRT only — FP16 kernels (default on)
     std::string trtCacheDir  = "models/trt_engines";
     std::string modelsDir    = "models";
+    std::string detModelPath;   // empty = modelsDir/ocrVersion_det.onnx
+    std::string clsModelPath;   // empty = modelsDir/ocrVersion_cls.onnx
+    std::string recModelPath;   // empty = modelsDir/ocrVersion_rec_modelType.onnx
+    std::string dictPath;       // empty = modelsDir/ocrVersion_rec_modelType_dict.txt
 };
 
 class Engine {
@@ -271,6 +298,8 @@ public:
     std::future<PagePrediction> recognizeAsync(const std::string& imagePath);
     std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
 };
+
+ModelPaths resolveModelPaths(const EngineConfig& cfg);
 ```
 
 `recognize()` never throws — a missing/unreadable image or an inference
