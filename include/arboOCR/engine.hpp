@@ -41,9 +41,33 @@ struct EngineConfig {
     bool useAngleCls = false;
     bool useCuda = false;
     bool useTensorrt = false;
+    // TensorRT only: enable FP16 kernels (trt_fp16_enable). Default true —
+    // this was previously always-on when TensorRT was selected. Set false
+    // for FP32 engines when debugging accuracy. Changing this may require a
+    // separate trtCacheDir or clearing the cache so engines are rebuilt.
+    // INT8 is not supported (needs a calibration dataset).
+    bool useFp16 = true;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
+    // Optional absolute/relative paths. Empty = use modelsDir + default names
+    // (see resolveModelPaths). Use these for custom/fine-tuned ONNX or dicts;
+    // PP-OCRv6 default models are already multi-language (no language field).
+    std::string detModelPath;
+    std::string clsModelPath;
+    std::string recModelPath;
+    std::string dictPath;
 };
+
+struct ModelPaths {
+    std::string det;
+    std::string cls;
+    std::string rec;
+    std::string dict;
+};
+
+/// Resolve det/cls/rec/dict paths from config defaults and optional overrides.
+/// Does not check that files exist. Pure / side-effect free.
+ModelPaths resolveModelPaths(const EngineConfig& cfg);
 
 /// Auto-detect CUDA execution provider availability via ONNXRuntime.
 bool detectCuda();

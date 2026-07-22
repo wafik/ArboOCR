@@ -1,6 +1,8 @@
 // tests/test_engine.cpp
 #include <doctest/doctest.h>
 
+#include <filesystem>
+
 #include "arboOCR/engine.hpp"
 #include "arboOCR/recognizer.hpp"
 #include "arboOCR/types.hpp"
@@ -17,6 +19,63 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.detLimitSideLen == 1536);
     CHECK(cfg.recBatchNum == 6);
     CHECK(cfg.useAngleCls == false);
+    CHECK(cfg.useFp16 == true); // TensorRT FP16 default (was always-on)
+    CHECK(cfg.detModelPath.empty());
+    CHECK(cfg.clsModelPath.empty());
+    CHECK(cfg.recModelPath.empty());
+    CHECK(cfg.dictPath.empty());
+}
+
+TEST_CASE("EngineConfig path overrides default empty") {
+    EngineConfig cfg;
+    CHECK(cfg.detModelPath.empty());
+    CHECK(cfg.clsModelPath.empty());
+    CHECK(cfg.recModelPath.empty());
+    CHECK(cfg.dictPath.empty());
+}
+
+TEST_CASE("resolveModelPaths uses default flat layout under modelsDir") {
+    EngineConfig cfg;
+    cfg.modelsDir = "models";
+    cfg.ocrVersion = "PP-OCRv6";
+    cfg.modelType = "medium";
+    ModelPaths p = resolveModelPaths(cfg);
+    // Use path-agnostic checks: ends with expected filename; prefer
+    // std::filesystem for separator safety on Windows.
+    namespace fs = std::filesystem;
+    CHECK(fs::path(p.det).filename() == "PP-OCRv6_det.onnx");
+    CHECK(fs::path(p.cls).filename() == "PP-OCRv6_cls.onnx");
+    CHECK(fs::path(p.rec).filename() == "PP-OCRv6_rec_medium.onnx");
+    CHECK(fs::path(p.dict).filename() == "PP-OCRv6_rec_medium_dict.txt");
+    CHECK(fs::path(p.det).parent_path() == fs::path("models"));
+}
+
+TEST_CASE("resolveModelPaths only rec override leaves others default") {
+    EngineConfig cfg;
+    cfg.modelsDir = "models";
+    cfg.ocrVersion = "PP-OCRv6";
+    cfg.modelType = "tiny";
+    cfg.recModelPath = "custom/my_rec.onnx";
+    ModelPaths p = resolveModelPaths(cfg);
+    namespace fs = std::filesystem;
+    CHECK(p.rec == "custom/my_rec.onnx");
+    CHECK(fs::path(p.det).filename() == "PP-OCRv6_det.onnx");
+    CHECK(fs::path(p.cls).filename() == "PP-OCRv6_cls.onnx");
+    CHECK(fs::path(p.dict).filename() == "PP-OCRv6_rec_tiny_dict.txt");
+}
+
+TEST_CASE("resolveModelPaths all overrides win") {
+    EngineConfig cfg;
+    cfg.modelsDir = "models";
+    cfg.detModelPath = "a/det.onnx";
+    cfg.clsModelPath = "b/cls.onnx";
+    cfg.recModelPath = "c/rec.onnx";
+    cfg.dictPath = "d/dict.txt";
+    ModelPaths p = resolveModelPaths(cfg);
+    CHECK(p.det == "a/det.onnx");
+    CHECK(p.cls == "b/cls.onnx");
+    CHECK(p.rec == "c/rec.onnx");
+    CHECK(p.dict == "d/dict.txt");
 }
 
 TEST_CASE("LinePrediction and PagePrediction default-construct cleanly") {

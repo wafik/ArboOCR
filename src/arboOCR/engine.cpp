@@ -6,6 +6,7 @@
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/imgcodecs.hpp>
 
+#include "arboOCR/logging.hpp"
 #include "arboOCR/ocr_utils.hpp"
 
 namespace fs = std::filesystem;
@@ -47,28 +48,53 @@ Polygon cvPointsToPolygon(const std::vector<cv::Point>& box) {
 
 } // namespace
 
+ModelPaths resolveModelPaths(const EngineConfig& cfg) {
+    fs::path modelsDir(cfg.modelsDir);
+    ModelPaths out;
+    out.det = !cfg.detModelPath.empty()
+        ? cfg.detModelPath
+        : (modelsDir / (cfg.ocrVersion + "_det.onnx")).string();
+    out.cls = !cfg.clsModelPath.empty()
+        ? cfg.clsModelPath
+        : (modelsDir / (cfg.ocrVersion + "_cls.onnx")).string();
+    out.rec = !cfg.recModelPath.empty()
+        ? cfg.recModelPath
+        : (modelsDir / (cfg.ocrVersion + "_rec_" + cfg.modelType + ".onnx")).string();
+    out.dict = !cfg.dictPath.empty()
+        ? cfg.dictPath
+        : (modelsDir / (cfg.ocrVersion + "_rec_" + cfg.modelType + "_dict.txt")).string();
+    return out;
+}
+
 Engine::Engine(const EngineConfig& config) : config_(config) {
     bool useTensorrt = config.useTensorrt && detectTensorrt();
     bool useCuda = (config.useCuda || useTensorrt) && detectCuda();
     backend_ = useTensorrt ? "tensorrt" : useCuda ? "cuda" : "cpu";
+    log(LogLevel::Info, "Engine backend: " + backend_
+        + (useTensorrt ? (config.useFp16 ? " (fp16)" : " (fp32)") : ""));
 
-    fs::path modelsDir(config.modelsDir);
-    std::string detPath = (modelsDir / (config.ocrVersion + "_det.onnx")).string();
-    std::string clsPath = (modelsDir / (config.ocrVersion + "_cls.onnx")).string();
-    std::string recPath = (modelsDir / (config.ocrVersion + "_rec_" + config.modelType + ".onnx")).string();
-    std::string dictPath = (modelsDir / (config.ocrVersion + "_rec_" + config.modelType + "_dict.txt")).string();
+    ModelPaths paths = resolveModelPaths(config);
+    log(LogLevel::Debug,
+        "Model paths det=" + paths.det + " cls=" + paths.cls
+        + " rec=" + paths.rec + " dict=" + paths.dict);
 
     // Must be set before loadModel so TensorRT profiles match runtime batch size.
     recognizer_.setRecBatchNum(config.recBatchNum);
 
-    detector_.loadModel(detPath, useCuda, useTensorrt, config.trtCacheDir);
+    detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
     if (config.useAngleCls) {
-        classifier_.loadModel(clsPath, useCuda, useTensorrt, config.trtCacheDir);
+        classifier_.loadModel(paths.cls, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
     }
-    recognizer_.loadModel(recPath, useCuda, useTensorrt, config.trtCacheDir);
+    recognizer_.loadModel(paths.rec, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
 
     if (!recognizer_.loadKeysFromModelMetadata()) {
-        recognizer_.loadKeysFromFile(dictPath);
+        log(LogLevel::Debug, "Recognizer keys: model metadata missing, loading " + paths.dict);
+        recognizer_.loadKeysFromFile(paths.dict);
+    } else {
+        log(LogLevel::Debug, "Recognizer keys: loaded from model metadata");
+    }
+    if (recognizer_.keyCount() == 0) {
+        log(LogLevel::Warn, "Recognizer has no character dictionary loaded");
     }
 }
 
@@ -78,6 +104,9 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
     result.image = imageName;
 
     if (src.empty()) {
+        log(LogLevel::Warn, imageName.empty()
+            ? "recognize: empty image buffer"
+            : "recognize: empty/unreadable image (" + imageName + ")");
         auto elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
         result.elapsedMs = elapsed;
         return result;
@@ -109,7 +138,9 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
                 textBoxes[i].score,
             });
         }
-    } catch (const std::exception&) {
+        log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");
+    } catch (const std::exception& ex) {
+        log(LogLevel::Error, std::string("recognize failed: ") + ex.what());
         result.lines.clear();
     }
 
@@ -121,6 +152,9 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
 PagePrediction Engine::recognize(const std::string& imagePath) {
     fs::path path(imagePath);
     cv::Mat src = cv::imread(imagePath, cv::IMREAD_COLOR);
+    if (src.empty()) {
+        log(LogLevel::Warn, "recognize: failed to read image path: " + imagePath);
+    }
     return runPipeline(src, path.filename().string());
 }
 
