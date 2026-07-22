@@ -47,6 +47,7 @@ add_library(arboOCR STATIC
     src/arboOCR/engine.cpp
     src/arboOCR/model_downloader.cpp
     src/arboOCR/types.cpp
+    src/arboOCR/logging.cpp
 )
 target_include_directories(arboOCR PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
@@ -72,6 +73,7 @@ add_executable(arboocr_tests
     tests/test_engine.cpp
     tests/test_engine_inference.cpp
     tests/test_model_downloader.cpp
+    tests/test_logging.cpp
 )
 target_link_libraries(arboocr_tests PRIVATE arboOCR doctest::doctest)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

@@ -31,7 +31,8 @@ server, no dataset tooling, just the inference core.
 
 - **CPU / CUDA / TensorRT**, auto-detected at runtime — construct one
   `Engine`, it picks the fastest backend available and tells you which one
-  it picked.
+  it picked. With TensorRT, **FP16 is on by default** (`EngineConfig::useFp16`)
+  for edge latency; set `useFp16 = false` for FP32 engines when debugging.
 - **Facade + building blocks.** Use `Engine::recognize()` for the common
   case, or drop down to `Detector`/`Classifier`/`Recognizer` directly if
   you're building a custom pipeline.
@@ -235,6 +236,7 @@ recognizer it was paired with. If you want better accuracy, change
 #include <arboOCR/detector.hpp>     // Detector — text region detection
 #include <arboOCR/classifier.hpp>   // Classifier — orientation (0°/180°)
 #include <arboOCR/recognizer.hpp>   // Recognizer — CRNN text recognition
+#include <arboOCR/logging.hpp>      // optional log callback (default: silent)
 #include <arboOCR/model_downloader.hpp>
 ```
 
@@ -255,6 +257,7 @@ struct EngineConfig {
     bool        useAngleCls  = false;
     bool        useCuda      = false;
     bool        useTensorrt  = false;
+    bool        useFp16      = true;      // TensorRT only — FP16 kernels (default on)
     std::string trtCacheDir  = "models/trt_engines";
     std::string modelsDir    = "models";
 };
@@ -283,6 +286,29 @@ struct PagePrediction  { std::string image; std::vector<LinePrediction> lines; f
 std::string toJson(const PagePrediction& page, bool pretty = false);
 std::string toJson(const LinePrediction& line, bool pretty = false);
 ```
+
+### Logging (optional)
+
+The library **does not print to stdout/stderr by default**. Demos and
+examples may use `std::cout`/`std::cerr` for their own UI; that is not the
+core engine. For services, install a process-wide callback and route into
+your stack (spdlog, glog, etc.):
+
+```cpp
+#include <arboOCR/logging.hpp>
+
+// Demo helper:
+arbo::ocr::setLogCallback(arbo::ocr::makeStderrLogger());
+arbo::ocr::setMinLogLevel(arbo::ocr::LogLevel::Debug);
+
+// Or bridge to your logger:
+arbo::ocr::setLogCallback([](arbo::ocr::LogLevel level, const std::string& msg) {
+    // spdlog::log(map(level), msg);
+});
+```
+
+Levels: `Debug`, `Info` (default min), `Warn`, `Error`. Callbacks that throw
+are swallowed so a broken sink never crashes OCR.
 
 ### Building a custom pipeline
 
@@ -348,6 +374,27 @@ crop to a shared width is wasted computation there. TensorRT/GPU backends
 parallelize across the batch dimension, where batching pays off. Batching
 is always on — there's currently no flag to disable it for CPU-only
 deployments.
+
+### TensorRT precision (FP16)
+
+When `useTensorrt` is true, TensorRT builds engines with **FP16 enabled by
+default** (`EngineConfig::useFp16 = true`). That is the usual edge-device
+setting on Jetson / desktop GPUs: lower latency and smaller engines, with
+minimal accuracy loss for OCR. Set `useFp16 = false` only if you need FP32
+for debugging (expect slower first-run compile and runtime).
+
+Changing `useFp16` (or `recBatchNum`) can invalidate cached engines under
+`trtCacheDir` — clear that directory or use a separate cache path so TRT
+rebuilds instead of loading a mismatched engine.
+
+**INT8** is not exposed: it needs a representative calibration dataset and
+is easy to get wrong for multilingual text. Prefer FP16 for now.
+
+```cpp
+cfg.useTensorrt = true;
+cfg.useFp16 = true;   // default — keep for production edge latency
+// cfg.useFp16 = false; // FP32 engines for accuracy A/B only
+```
 
 ## Architecture
 

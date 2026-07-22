@@ -5,8 +5,11 @@
 #include <cxxopts.hpp>
 
 #include "arboOCR/engine.hpp"
+#include "arboOCR/logging.hpp"
 
 int main(int argc, char* argv[]) {
+    // Demo only: library default is silent. Route engine events to stderr.
+    arbo::ocr::setLogCallback(arbo::ocr::makeStderrLogger());
     cxxopts::Options opts("arboocr_demo", "Recognize text in one image with arboOCR");
     opts.add_options()
         ("image", "Path to input image", cxxopts::value<std::string>())
@@ -17,6 +20,8 @@ int main(int argc, char* argv[]) {
         ("angle", "Enable angle classification", cxxopts::value<bool>()->default_value("false"))
         ("cuda", "Request CUDA execution provider", cxxopts::value<bool>()->default_value("false"))
         ("tensorrt", "Request TensorRT execution provider", cxxopts::value<bool>()->default_value("false"))
+        ("fp16", "TensorRT FP16 (default true; only used with --tensorrt)",
+            cxxopts::value<bool>()->default_value("true"))
         ("h,help", "Print usage");
 
     auto result = opts.parse(argc, argv);
@@ -32,6 +37,7 @@ int main(int argc, char* argv[]) {
     cfg.useAngleCls = result["angle"].as<bool>();
     cfg.useCuda = result["cuda"].as<bool>();
     cfg.useTensorrt = result["tensorrt"].as<bool>();
+    cfg.useFp16 = result["fp16"].as<bool>();
 
     arbo::ocr::Engine engine(cfg);
     std::cout << "Backend: " << engine.backend() << "\n";
