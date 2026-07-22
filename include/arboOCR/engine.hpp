@@ -3,8 +3,11 @@
 // (detect -> crop -> angle -> recognize). Adapted from RapidAI/RapidOcrOnnx's
 // OcrLiteImpl::detect() pipeline — see THIRD_PARTY_NOTICES.md.
 
+#include <future>
 #include <string>
 #include <vector>
+
+#include <opencv2/core.hpp>
 
 #include "arboOCR/classifier.hpp"
 #include "arboOCR/detector.hpp"
@@ -30,6 +33,11 @@ struct EngineConfig {
     float detThresh = 0.3f;
     float detUnclipRatio = 1.6f;
     int detLimitSideLen = 1536;
+    // Crops per recognition inference call (PaddleOCR/RapidOCR default: 6).
+    // Raise on GPU/TensorRT when VRAM allows; lower on tight CPU budgets.
+    // Values are clamped to >= 1. TensorRT engine profiles are built against
+    // this value at Engine construction time.
+    int recBatchNum = 6;
     bool useAngleCls = false;
     bool useCuda = false;
     bool useTensorrt = false;
@@ -51,12 +59,30 @@ public:
     /// auto-detection.
     std::string backend() const { return backend_; }
 
-    /// Run the full det -> crop -> angle -> recognize pipeline on one image.
-    /// Never throws: image-read failures and inference exceptions both
-    /// degrade to an empty-lines PagePrediction with elapsedMs set.
+    /// Run the full det -> crop -> angle -> recognize pipeline on one image
+    /// loaded from disk. Never throws: image-read failures and inference
+    /// exceptions both degrade to an empty-lines PagePrediction with
+    /// elapsedMs set.
     PagePrediction recognize(const std::string& imagePath);
 
+    /// Same pipeline as the path overload, but on an already-decoded BGR
+    /// image in memory (e.g. a camera frame or API upload). Avoids a disk
+    /// round-trip. Never throws; empty/invalid mats yield empty lines.
+    /// `page.image` is left empty (no filename). The mat is not modified.
+    PagePrediction recognize(const cv::Mat& image);
+
+    /// Non-blocking wrappers around recognize(). Each call launches work on
+    /// a background thread and returns a future. Not safe to call
+    /// concurrently on the same Engine instance (ONNXRuntime sessions are
+    /// not shared-session concurrent) — use one outstanding async call at a
+    /// time, or one Engine per worker. The Mat overload clones the image so
+    /// the caller may free/reuse their buffer immediately.
+    std::future<PagePrediction> recognizeAsync(const std::string& imagePath);
+    std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
+
 private:
+    PagePrediction runPipeline(const cv::Mat& src, const std::string& imageName);
+
     Detector detector_;
     Classifier classifier_;
     Recognizer recognizer_;

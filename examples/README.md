@@ -8,7 +8,8 @@ project build — no separate setup needed.
 
 ## `basic_recognize` — the common case
 
-Construct an `Engine`, call `recognize()`, print the lines. This is exactly
+Construct an `Engine`, call `recognize()`, print each line's text, score,
+and bounding polygon, with a simple empty-result check. This is exactly
 the pattern in the README's Quickstart section, made buildable.
 
 ```bash

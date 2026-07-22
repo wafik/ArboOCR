@@ -29,6 +29,10 @@ size_t argmax(ForwardIt first, ForwardIt last) {
 Recognizer::Recognizer() = default;
 Recognizer::~Recognizer() = default;
 
+void Recognizer::setRecBatchNum(int n) {
+    recBatchNum_ = n < 1 ? 1 : n;
+}
+
 void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
                          bool useTensorrt, const std::string& trtCacheDir) {
     sessionOptions_.SetInterOpNumThreads(0);
@@ -36,14 +40,17 @@ void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
     // Height is fixed at kDstHeight=48; width and batch size vary (batching
-    // up to kRecBatchNum=6 crops per call — see getTextLines()). Opt/max
-    // batch dim is 6 to match, so ORT TRT builds one engine that covers the
-    // real runtime batch sizes instead of rebuilding per-shape (matches
-    // this project's own documented profile in TENSORRT_ENGINE_PORT_PLAN.md
-    // Opsi 1 table: rec opt=(6,3,48,320), max=(6,3,48,2048) — previously
-    // pinned at batch=1 here, before batching was implemented).
+    // up to recBatchNum_ crops per call — see getTextLines()). Opt/max
+    // batch dim matches the configured batch so ORT TRT builds one engine
+    // that covers the real runtime batch sizes instead of rebuilding
+    // per-shape (default 6 matches PaddleOCR/RapidOCR and this project's
+    // TENSORRT_ENGINE_PORT_PLAN.md Opsi 1 table).
+    const int batch = recBatchNum_;
+    const std::string minProfile = "x:1x3x48x32";
+    const std::string optProfile = "x:" + std::to_string(batch) + "x3x48x320";
+    const std::string maxProfile = "x:" + std::to_string(batch) + "x3x48x2048";
     detail::configureExecutionProviders(sessionOptions_, useCuda, useTensorrt, trtCacheDir,
-        {"x:1x3x48x32", "x:6x3x48x320", "x:6x3x48x2048"});
+        {minProfile, optProfile, maxProfile});
 
 #ifdef _WIN32
     std::wstring wpath(modelPath.begin(), modelPath.end());
@@ -299,8 +306,9 @@ std::vector<RawTextLine> Recognizer::getTextLines(std::vector<cv::Mat>& partImag
         return ratio(partImages[a]) < ratio(partImages[b]);
     });
 
-    for (size_t groupStart = 0; groupStart < n; groupStart += kRecBatchNum) {
-        size_t groupEnd = std::min(groupStart + static_cast<size_t>(kRecBatchNum), n);
+    const size_t batchNum = static_cast<size_t>(recBatchNum_ < 1 ? 1 : recBatchNum_);
+    for (size_t groupStart = 0; groupStart < n; groupStart += batchNum) {
+        size_t groupEnd = std::min(groupStart + batchNum, n);
 
         // 2. max_wh_ratio starts at the model's reference ratio (kRefImgWidth
         // / kDstHeight) and is raised to the widest crop's own ratio in this

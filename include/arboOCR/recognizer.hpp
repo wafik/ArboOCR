@@ -47,10 +47,17 @@ public:
     /// Number of loaded keys (0 if neither load method has succeeded yet).
     size_t keyCount() const { return keys_.size(); }
 
+    /// Max crops per recognition inference call (default 6, matching
+    /// PaddleOCR/RapidOCR). Call before loadModel() so TensorRT profiles
+    /// are built against the same batch size used at runtime. Values < 1
+    /// are clamped to 1.
+    void setRecBatchNum(int n);
+    int recBatchNum() const { return recBatchNum_; }
+
     /// Recognize one cropped, angle-corrected text-line image per input Mat,
     /// returned in the SAME order as `partImages`.
     ///
-    /// Internally batches up to kRecBatchNum crops per ONNXRuntime
+    /// Internally batches up to recBatchNum_ crops per ONNXRuntime
     /// Session::Run() call instead of one call per crop — mirrors
     /// PaddleOCR/RapidOCR's TextRecognizer.__call__ / resize_norm_img
     /// (tools/infer/predict_rec.py and python/rapidocr/ch_ppocr_rec/main.py
@@ -155,10 +162,10 @@ private:
     std::vector<Ort::AllocatedStringPtr> outputNamesPtr_;
     std::vector<std::string> keys_;
 
-    // Mirrors PaddleOCR/RapidOCR's rec_batch_num=6 default (rec_image_shape
-    // [3, 48, 320], i.e. imgW=320 -> the reference aspect ratio used to seed
-    // max_wh_ratio for each batch — see getTextLines() doc comment).
-    static constexpr int kRecBatchNum = 6;
+    // Default matches PaddleOCR/RapidOCR's rec_batch_num=6. Overridable via
+    // setRecBatchNum() / EngineConfig::recBatchNum before loadModel().
+    // rec_image_shape [3, 48, 320] -> kRefImgWidth seeds max_wh_ratio per batch.
+    int recBatchNum_ = 6;
     static constexpr int kRefImgWidth = 320;
     static constexpr int kDstHeight = 48;
     const float meanValues_[3] = {127.5f, 127.5f, 127.5f};

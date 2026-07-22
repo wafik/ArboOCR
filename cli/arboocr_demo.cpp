@@ -38,10 +38,27 @@ int main(int argc, char* argv[]) {
 
     auto page = engine.recognize(result["image"].as<std::string>());
     std::cout << "Image: " << page.image << "\n";
+    // recognize() never throws — missing/unreadable images and inference
+    // failures both yield empty lines with elapsedMs still set.
+    if (page.lines.empty()) {
+        std::cerr << "No text found (missing image, unsupported format, or empty page)"
+                  << " (" << page.elapsedMs << " ms)\n";
+        return 1;
+    }
     std::cout << "Lines: " << page.lines.size() << " (" << page.elapsedMs << " ms)\n";
     for (size_t i = 0; i < page.lines.size(); i++) {
-        std::cout << "  [" << i << "] \"" << page.lines[i].text
-                  << "\" (score=" << page.lines[i].score << ")\n";
+        const auto& line = page.lines[i];
+        std::cout << "  [" << i << "] \"" << line.text
+                  << "\" (score=" << line.score << ")";
+        if (!line.polygon.empty()) {
+            std::cout << " poly=[";
+            for (size_t p = 0; p < line.polygon.size(); p++) {
+                if (p) std::cout << ", ";
+                std::cout << "(" << line.polygon[p].x << "," << line.polygon[p].y << ")";
+            }
+            std::cout << "]";
+        }
+        std::cout << "\n";
     }
     return 0;
 }

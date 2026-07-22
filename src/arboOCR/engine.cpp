@@ -58,6 +58,9 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     std::string recPath = (modelsDir / (config.ocrVersion + "_rec_" + config.modelType + ".onnx")).string();
     std::string dictPath = (modelsDir / (config.ocrVersion + "_rec_" + config.modelType + "_dict.txt")).string();
 
+    // Must be set before loadModel so TensorRT profiles match runtime batch size.
+    recognizer_.setRecBatchNum(config.recBatchNum);
+
     detector_.loadModel(detPath, useCuda, useTensorrt, config.trtCacheDir);
     if (config.useAngleCls) {
         classifier_.loadModel(clsPath, useCuda, useTensorrt, config.trtCacheDir);
@@ -69,13 +72,11 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     }
 }
 
-PagePrediction Engine::recognize(const std::string& imagePath) {
+PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageName) {
     auto t0 = std::chrono::steady_clock::now();
-    fs::path path(imagePath);
     PagePrediction result;
-    result.image = path.filename().string();
+    result.image = imageName;
 
-    cv::Mat src = cv::imread(imagePath, cv::IMREAD_COLOR);
     if (src.empty()) {
         auto elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
         result.elapsedMs = elapsed;
@@ -115,6 +116,29 @@ PagePrediction Engine::recognize(const std::string& imagePath) {
     auto elapsed = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
     result.elapsedMs = elapsed;
     return result;
+}
+
+PagePrediction Engine::recognize(const std::string& imagePath) {
+    fs::path path(imagePath);
+    cv::Mat src = cv::imread(imagePath, cv::IMREAD_COLOR);
+    return runPipeline(src, path.filename().string());
+}
+
+PagePrediction Engine::recognize(const cv::Mat& image) {
+    return runPipeline(image, {});
+}
+
+std::future<PagePrediction> Engine::recognizeAsync(const std::string& imagePath) {
+    return std::async(std::launch::async, [this, imagePath]() {
+        return recognize(imagePath);
+    });
+}
+
+std::future<PagePrediction> Engine::recognizeAsync(const cv::Mat& image) {
+    cv::Mat copy = image.clone();
+    return std::async(std::launch::async, [this, copy = std::move(copy)]() {
+        return recognize(copy);
+    });
 }
 
 } // namespace arbo::ocr

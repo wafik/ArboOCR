@@ -35,10 +35,13 @@ server, no dataset tooling, just the inference core.
 - **Facade + building blocks.** Use `Engine::recognize()` for the common
   case, or drop down to `Detector`/`Classifier`/`Recognizer` directly if
   you're building a custom pipeline.
-- **Batched recognition.** Text-line crops are batched (up to 6 per
-  inference call, matching PaddleOCR/RapidOCR's own convention) instead of
-  one ONNXRuntime call per line — see [Benchmarks](#benchmarks) for when
-  this actually helps.
+- **Batched recognition.** Text-line crops are batched (default 6 per
+  inference call, matching PaddleOCR/RapidOCR; configurable via
+  `EngineConfig::recBatchNum`) instead of one ONNXRuntime call per line —
+  see [Benchmarks](#benchmarks) for when this actually helps.
+- **In-memory + async.** `recognize(const cv::Mat&)` skips disk I/O for
+  camera/API pipelines; `recognizeAsync()` returns `std::future` for
+  non-blocking multi-image work.
 - **Ported, not reinvented.** The detection/recognition math is a
   near-verbatim port of [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx)
   (Apache-2.0) — battle-tested logic, renamed and reorganized for a clean
@@ -54,13 +57,26 @@ int main() {
     arbo::ocr::EngineConfig cfg;
     cfg.modelsDir = "models";
     cfg.useTensorrt = true; // auto-falls back to CUDA, then CPU
+    // cfg.recBatchNum = 8; // optional: crops per rec inference (default 6)
 
     arbo::ocr::Engine engine(cfg);
     std::cout << "Running on: " << engine.backend() << "\n";
 
+    // Never throws: missing/unreadable images yield empty lines + elapsedMs.
     auto page = engine.recognize("page.jpg");
-    for (auto& line : page.lines)
+    if (page.lines.empty()) {
+        std::cerr << "No text found (missing image or empty page)\n";
+        return 1;
+    }
+    for (auto& line : page.lines) {
         std::cout << line.text << " (score=" << line.score << ")\n";
+        // Polygon points — draw boxes with e.g. cv::polylines
+        for (auto& pt : line.polygon)
+            std::cout << "  (" << pt.x << "," << pt.y << ")";
+        std::cout << "\n";
+    }
+    // Structured export for wrappers / web backends:
+    // std::cout << arbo::ocr::toJson(page, /*pretty=*/true) << "\n";
 }
 ```
 
@@ -235,6 +251,7 @@ struct EngineConfig {
     float       detThresh    = 0.3f;
     float       detUnclipRatio = 1.6f;
     int         detLimitSideLen = 1536;
+    int         recBatchNum  = 6;         // crops per rec inference (raise on GPU VRAM)
     bool        useAngleCls  = false;
     bool        useCuda      = false;
     bool        useTensorrt  = false;
@@ -247,15 +264,24 @@ public:
     explicit Engine(const EngineConfig& config);
     std::string backend() const;                       // "tensorrt" | "cuda" | "cpu"
     PagePrediction recognize(const std::string& imagePath);
+    PagePrediction recognize(const cv::Mat& image);    // in-memory (no disk I/O)
+    std::future<PagePrediction> recognizeAsync(const std::string& imagePath);
+    std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
 };
 ```
 
 `recognize()` never throws — a missing/unreadable image or an inference
-error degrades to an empty-lines result with `elapsedMs` still set.
+error degrades to an empty-lines result with `elapsedMs` still set. Check
+`page.lines.empty()` for that case. Async variants are not safe for
+concurrent use on the same `Engine` (one outstanding call at a time, or
+one Engine per worker).
 
 ```cpp
 struct LinePrediction { Polygon polygon; std::string text; float score; };
 struct PagePrediction  { std::string image; std::vector<LinePrediction> lines; float elapsedMs; };
+
+std::string toJson(const PagePrediction& page, bool pretty = false);
+std::string toJson(const LinePrediction& line, bool pretty = false);
 ```
 
 ### Building a custom pipeline
@@ -309,8 +335,8 @@ handwritten menus.
 
 ### Batching: CPU vs. TensorRT
 
-Recognition batches up to 6 text-line crops per inference call. This is a
-genuine trade-off, not a universal win:
+Recognition batches up to `recBatchNum` text-line crops per inference call
+(default 6). This is a genuine trade-off, not a universal win:
 
 | Backend | Before batching | After batching |
 |---|---|---|

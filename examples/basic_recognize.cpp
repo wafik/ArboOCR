@@ -1,9 +1,10 @@
 // examples/basic_recognize.cpp
 //
 // The most common way to use arboOCR: construct an Engine, call
-// recognize() on an image, print the lines it found. This is the pattern
-// shown in the README's Quickstart section — this file is that snippet,
-// made buildable so it's provably correct rather than just illustrative.
+// recognize() on an image, print the lines it found (text, score, and
+// bounding polygon). This is the pattern shown in the README's Quickstart
+// section — this file is that snippet, made buildable so it's provably
+// correct rather than just illustrative.
 //
 // Usage:
 //   basic_recognize <image> [models-dir] [--tensorrt]
@@ -41,10 +42,25 @@ int main(int argc, char* argv[]) {
     std::cout << "Backend: " << engine.backend() << "\n";
 
     arbo::ocr::PagePrediction page = engine.recognize(imagePath);
+    // recognize() never throws: missing/unreadable images and inference
+    // failures both return empty lines with elapsedMs still set.
+    if (page.lines.empty()) {
+        std::cerr << "No text found (missing image, unsupported format, or empty page)"
+                  << " in " << page.elapsedMs << " ms\n";
+        return 1;
+    }
+
     std::cout << "Found " << page.lines.size() << " lines in " << page.elapsedMs << " ms\n\n";
 
     for (const auto& line : page.lines) {
         std::cout << line.text << "  (score=" << line.score << ")\n";
+        // Polygon: 4 points, clockwise from top-left-ish — use these to draw
+        // boxes over the source image (e.g. cv::polylines).
+        std::cout << "  polygon:";
+        for (const auto& pt : line.polygon) {
+            std::cout << " (" << pt.x << "," << pt.y << ")";
+        }
+        std::cout << "\n";
     }
 
     return 0;

@@ -58,4 +58,11 @@ struct PagePrediction {
     float elapsedMs = 0.0f;
 };
 
+/// Serialize a page prediction (text, scores, polygon points, timing) to JSON.
+/// Never throws. When `pretty` is true, uses multi-line indented output.
+std::string toJson(const PagePrediction& page, bool pretty = false);
+
+/// Serialize a single line prediction to a JSON object string.
+std::string toJson(const LinePrediction& line, bool pretty = false);
+
 } // namespace arbo::ocr

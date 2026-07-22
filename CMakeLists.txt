@@ -46,6 +46,7 @@ add_library(arboOCR STATIC
     src/arboOCR/recognizer.cpp
     src/arboOCR/engine.cpp
     src/arboOCR/model_downloader.cpp
+    src/arboOCR/types.cpp
 )
 target_include_directories(arboOCR PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
