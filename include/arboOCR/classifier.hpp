@@ -22,7 +22,8 @@ public:
     Classifier& operator=(const Classifier&) = delete;
 
     void loadModel(const std::string& modelPath, bool useCuda = false,
-                   bool useTensorrt = false, const std::string& trtCacheDir = "");
+                   bool useTensorrt = false, const std::string& trtCacheDir = "",
+                   bool useFp16 = true);
 
     /// Classify each cropped text-line image's orientation (0 = upright,
     /// 1 = 180-degree rotated). If `doAngle` is false, returns index=-1 for

@@ -34,7 +34,8 @@ void Recognizer::setRecBatchNum(int n) {
 }
 
 void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
-                         bool useTensorrt, const std::string& trtCacheDir) {
+                         bool useTensorrt, const std::string& trtCacheDir,
+                         bool useFp16) {
     sessionOptions_.SetInterOpNumThreads(0);
     sessionOptions_.SetIntraOpNumThreads(0);
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
@@ -50,7 +51,7 @@ void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
     const std::string optProfile = "x:" + std::to_string(batch) + "x3x48x320";
     const std::string maxProfile = "x:" + std::to_string(batch) + "x3x48x2048";
     detail::configureExecutionProviders(sessionOptions_, useCuda, useTensorrt, trtCacheDir,
-        {minProfile, optProfile, maxProfile});
+        {minProfile, optProfile, maxProfile}, useFp16);
 
 #ifdef _WIN32
     std::wstring wpath(modelPath.begin(), modelPath.end());

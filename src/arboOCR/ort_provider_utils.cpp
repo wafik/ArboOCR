@@ -31,7 +31,8 @@ void configureExecutionProviders(
     bool useCuda,
     bool useTensorrt,
     const std::string& trtCacheDir,
-    const TrtShapeProfile& profile
+    const TrtShapeProfile& profile,
+    bool useFp16
 ) {
     // TensorRT must be appended BEFORE CUDA (ORT tries providers in order).
     if (useTensorrt) {
@@ -39,7 +40,7 @@ void configureExecutionProviders(
         std::unordered_map<std::string, std::string> opts = {
             {"device_id", "0"},
             {"trt_max_workspace_size", "1073741824"}, // 1GB
-            {"trt_fp16_enable", "1"},
+            {"trt_fp16_enable", useFp16 ? "1" : "0"},
             {"trt_engine_cache_enable", "1"},
             {"trt_profile_min_shapes", profile.minShape},
             {"trt_profile_opt_shapes", profile.optShape},

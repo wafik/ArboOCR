@@ -25,7 +25,8 @@ public:
     Recognizer& operator=(const Recognizer&) = delete;
 
     void loadModel(const std::string& modelPath, bool useCuda = false,
-                   bool useTensorrt = false, const std::string& trtCacheDir = "");
+                   bool useTensorrt = false, const std::string& trtCacheDir = "",
+                   bool useFp16 = true);
 
     /// RapidOcrOnnx's original keys-loading mechanism: one character per
     /// line in a plain text file. On success, prepends "#" (CTC blank) and

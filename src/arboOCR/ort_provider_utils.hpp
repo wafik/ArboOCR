@@ -31,14 +31,16 @@ struct TrtShapeProfile {
 /// Appends TensorRT (if useTensorrt) then CUDA (if useCuda) execution
 /// providers to `sessionOptions`, in that order — ONNXRuntime tries
 /// providers in append order, so TensorRT must come first. Shared by all
-/// three net classes; only the profile shape and cache dir differ between
-/// callers.
+/// three net classes; only the profile shape, cache dir, and FP16 flag
+/// differ between callers. `useFp16` maps to trt_fp16_enable (default on
+/// for edge latency; ignored when TensorRT is off).
 void configureExecutionProviders(
     Ort::SessionOptions& sessionOptions,
     bool useCuda,
     bool useTensorrt,
     const std::string& trtCacheDir,
-    const TrtShapeProfile& profile
+    const TrtShapeProfile& profile,
+    bool useFp16 = true
 );
 
 } // namespace arbo::ocr::detail

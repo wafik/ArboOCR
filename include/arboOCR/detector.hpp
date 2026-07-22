@@ -23,9 +23,11 @@ public:
     Detector& operator=(const Detector&) = delete;
 
     /// Load the DBNet ONNX model. `useCuda` appends CUDA EP,
-    /// `useTensorrt` appends TensorRT EP with FP16 + profile shapes.
+    /// `useTensorrt` appends TensorRT EP with profile shapes.
+    /// `useFp16` enables TensorRT FP16 (ignored unless useTensorrt).
     void loadModel(const std::string& modelPath, bool useCuda = false,
-                   bool useTensorrt = false, const std::string& trtCacheDir = "");
+                   bool useTensorrt = false, const std::string& trtCacheDir = "",
+                   bool useFp16 = true);
 
     /// Run detection on `src` (already resized to `scale.dstWidth x
     /// scale.dstHeight` internally). Returns text boxes in `src`'s original

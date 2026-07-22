@@ -64,7 +64,8 @@ Detector::Detector() = default;
 Detector::~Detector() = default;
 
 void Detector::loadModel(const std::string& modelPath, bool useCuda,
-                       bool useTensorrt, const std::string& trtCacheDir) {
+                       bool useTensorrt, const std::string& trtCacheDir,
+                       bool useFp16) {
     sessionOptions_.SetInterOpNumThreads(0);
     sessionOptions_.SetIntraOpNumThreads(0);
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
@@ -73,7 +74,7 @@ void Detector::loadModel(const std::string& modelPath, bool useCuda,
     // inputs without triggering an ORT TRT rebuild per image shape (see
     // TENSORRT_ENGINE_PORT_PLAN.md Opsi 1).
     detail::configureExecutionProviders(sessionOptions_, useCuda, useTensorrt, trtCacheDir,
-        {"x:1x3x32x32", "x:1x3x1536x1536", "x:1x3x2048x2048"});
+        {"x:1x3x32x32", "x:1x3x1536x1536", "x:1x3x2048x2048"}, useFp16);
 
 #ifdef _WIN32
     std::wstring wpath(modelPath.begin(), modelPath.end());
