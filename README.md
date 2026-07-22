@@ -81,7 +81,42 @@ int main() {
 }
 ```
 
-Or skip the C++ entirely and use the bundled CLI:
+### Python (optional)
+
+Engine facade via pybind11 — same native backends as C++. Off by default
+(`ARBOOCR_BUILD_PYTHON=OFF`); enable when you have Python 3 development
+headers and want `import arboocr`.
+
+```powershell
+cmake --preset windows-x64 -DARBOOCR_BUILD_PYTHON=ON
+cmake --build build/windows-x64 --config Release --target _arboocr
+$env:PYTHONPATH = "python"
+# Windows: DLL path is auto-probed for build/windows-x64/vcpkg_installed/.../bin;
+# override with $env:ARBOOCR_DLL_DIR = "...\vcpkg_installed\x64-windows\bin" if needed.
+python -c "from arboocr import Engine, EngineConfig; print(EngineConfig().model_type)"
+```
+
+```python
+from arboocr import Engine, EngineConfig, to_json
+
+cfg = EngineConfig()
+cfg.models_dir = "models"
+cfg.use_tensorrt = False
+engine = Engine(cfg)
+page = engine.recognize("page.jpg")          # path
+# page = engine.recognize(bgr_numpy_hxwx3)  # uint8 BGR only
+for line in page.lines:
+    print(line.text, line.score, [(p.x, p.y) for p in line.polygon])
+print(to_json(page, pretty=True))
+```
+
+NumPy images must be **HxWx3 uint8 BGR** (OpenCV layout). No async, no
+low-level Detector/Recognizer bindings, and no published wheels in v1 —
+build the extension against your local `arboOCR` lib. Path overrides map to
+snake_case (`rec_model_path`, etc.). See
+[`docs/superpowers/specs/2026-07-22-python-bindings-design.md`](docs/superpowers/specs/2026-07-22-python-bindings-design.md).
+
+Or skip bindings and use the bundled CLI:
 
 ```bash
 ./arboocr_demo --image page.jpg --models-dir models

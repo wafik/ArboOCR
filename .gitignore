@@ -3,3 +3,8 @@ models/
 *.onnx
 *.tmp
 vendor/onnxruntime/
+__pycache__/
+*.py[cod]
+python/arboocr/_arboocr*.pyd
+python/arboocr/_arboocr*.so
+.superpowers/

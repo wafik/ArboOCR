@@ -108,3 +108,10 @@ endif()
 
 # Buildable usage examples (see examples/README.md).
 add_subdirectory(examples)
+
+# Optional Python bindings (pybind11). Off by default so C++-only builds
+# never require Python/pybind11. See python/ and README "Python" section.
+option(ARBOOCR_BUILD_PYTHON "Build pybind11 module arboocr._arboocr" OFF)
+if(ARBOOCR_BUILD_PYTHON)
+    add_subdirectory(python)
+endif()
