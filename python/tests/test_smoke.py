@@ -24,7 +24,7 @@ class TestArboocrSmoke(unittest.TestCase):
     def test_config_defaults(self):
         cfg = EngineConfig()
         self.assertEqual(cfg.ocr_version, "PP-OCRv6")
-        self.assertEqual(cfg.model_type, "medium")
+        self.assertEqual(cfg.model_type, "small")
         self.assertEqual(cfg.rec_batch_num, 6)
         self.assertTrue(cfg.use_fp16)
         self.assertEqual(cfg.models_dir, "models")

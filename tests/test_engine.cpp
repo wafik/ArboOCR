@@ -12,7 +12,7 @@ using namespace arbo::ocr;
 TEST_CASE("EngineConfig has sane defaults") {
     EngineConfig cfg;
     CHECK(cfg.ocrVersion == "PP-OCRv6");
-    CHECK(cfg.modelType == "medium"); // recognizer size; see engine.hpp doc comment
+    CHECK(cfg.modelType == "small"); // was medium; CPU-honest default
     CHECK(cfg.detBoxThresh == doctest::Approx(0.5));
     CHECK(cfg.detThresh == doctest::Approx(0.3));
     CHECK(cfg.detUnclipRatio == doctest::Approx(1.6));
