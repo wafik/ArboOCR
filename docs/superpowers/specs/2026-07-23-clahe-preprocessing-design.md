@@ -137,11 +137,14 @@ existing `useAngleCls`/model-path-override documentation).
 | Low-contrast synthetic Mat → higher stddev after `applyClahe` | `tests/test_preprocess.cpp` (new) | Contrast measurably increases |
 | Empty Mat input | `tests/test_preprocess.cpp` | Returns empty Mat, no throw |
 | 1-channel (grayscale) Mat input | `tests/test_preprocess.cpp` | Returns valid enhanced 1-channel Mat, no throw |
-| `EngineConfig::useClahe = true` end-to-end | `tests/test_engine.cpp` (extend existing) | Pipeline runs to completion without crash/throw on the bundled sample image (no golden-output assertion — CLAHE changes pixel values, nothing to hardcode against) |
-| `EngineConfig` default | `tests/test_engine.cpp` | `useClahe` defaults to `false` |
+| `EngineConfig::useClahe = true` end-to-end | `tests/test_engine_inference.cpp` (extend existing) | Pipeline runs to completion without crash/throw on the bundled sample image (no golden-output assertion — CLAHE changes pixel values, nothing to hardcode against) |
+| `EngineConfig` default | `tests/test_engine.cpp` | `useClahe` defaults to `false` (plain struct check, no model needed) |
 
-No real ONNX model required for `test_preprocess.cpp`. The `test_engine.cpp`
-addition reuses whatever existing fixture/model setup that file already has.
+No real ONNX model required for `test_preprocess.cpp` or the default-value
+check in `test_engine.cpp`. The `useClahe=true` end-to-end case goes in
+`test_engine_inference.cpp` — the file that already loads real tiny models
+against the bundled sample image (`test_engine.cpp` itself only covers
+non-inference logic like JSON serialization).
 
 ## Alternatives considered
 
