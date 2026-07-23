@@ -8,6 +8,7 @@
 
 #include "arboOCR/logging.hpp"
 #include "arboOCR/ocr_utils.hpp"
+#include "arboOCR/preprocess.hpp"
 
 namespace fs = std::filesystem;
 
@@ -113,13 +114,14 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
     }
 
     try {
-        ScaleParam scale = getScaleParam(src, config_.detLimitSideLen);
-        auto textBoxes = detector_.getTextBoxes(src, scale, config_.detBoxThresh, config_.detThresh, config_.detUnclipRatio);
+        cv::Mat prepped = config_.useClahe ? applyClahe(src) : src;
+        ScaleParam scale = getScaleParam(prepped, config_.detLimitSideLen);
+        auto textBoxes = detector_.getTextBoxes(prepped, scale, config_.detBoxThresh, config_.detThresh, config_.detUnclipRatio);
 
         std::vector<cv::Mat> partImages;
         partImages.reserve(textBoxes.size());
         for (auto& box : textBoxes) {
-            partImages.push_back(getRotateCropImage(src, box.boxPoint));
+            partImages.push_back(getRotateCropImage(prepped, box.boxPoint));
         }
 
         auto angles = classifier_.getAngles(partImages, config_.useAngleCls, /*mostAngle=*/false);

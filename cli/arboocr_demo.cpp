@@ -22,6 +22,8 @@ int main(int argc, char* argv[]) {
         ("tensorrt", "Request TensorRT execution provider", cxxopts::value<bool>()->default_value("false"))
         ("fp16", "TensorRT FP16 (default true; only used with --tensorrt)",
             cxxopts::value<bool>()->default_value("true"))
+        ("clahe", "Apply CLAHE contrast enhancement before detection (helps low-contrast/faded documents)",
+            cxxopts::value<bool>()->default_value("false"))
         ("det-model", "Override detector ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("cls-model", "Override classifier ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("rec-model", "Override recognizer ONNX path", cxxopts::value<std::string>()->default_value(""))
@@ -43,6 +45,7 @@ int main(int argc, char* argv[]) {
     cfg.useCuda = result["cuda"].as<bool>();
     cfg.useTensorrt = result["tensorrt"].as<bool>();
     cfg.useFp16 = result["fp16"].as<bool>();
+    cfg.useClahe = result["clahe"].as<bool>();
     cfg.detModelPath = result["det-model"].as<std::string>();
     cfg.clsModelPath = result["cls-model"].as<std::string>();
     cfg.recModelPath = result["rec-model"].as<std::string>();

@@ -11,6 +11,7 @@
 
 #include "arboOCR/classifier.hpp"
 #include "arboOCR/detector.hpp"
+#include "arboOCR/preprocess.hpp"
 #include "arboOCR/recognizer.hpp"
 #include "arboOCR/types.hpp"
 
@@ -47,6 +48,13 @@ struct EngineConfig {
     // separate trtCacheDir or clearing the cache so engines are rebuilt.
     // INT8 is not supported (needs a calibration dataset).
     bool useFp16 = true;
+    // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the
+    // full image before detection. Off by default (matches
+    // useAngleCls/useCuda/useTensorrt) — helps low-contrast documents
+    // (faded receipts) recover text boxes DBNet would otherwise miss, but
+    // adds per-image CPU cost and isn't universally beneficial (can
+    // amplify noise on already-good scans). See preprocess.hpp::applyClahe.
+    bool useClahe = false;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
     // Optional absolute/relative paths. Empty = use modelsDir + default names
