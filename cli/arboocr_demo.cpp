@@ -15,8 +15,8 @@ int main(int argc, char* argv[]) {
         ("image", "Path to input image", cxxopts::value<std::string>())
         ("models-dir", "Directory containing ONNX models", cxxopts::value<std::string>()->default_value("models"))
         ("ocr-version", "OCR model version", cxxopts::value<std::string>()->default_value("PP-OCRv6"))
-        ("model-type", "Recognizer size — tiny/small/medium (detector is always the same file; medium is most accurate, tiny is fastest)",
-            cxxopts::value<std::string>()->default_value("medium"))
+        ("model-type", "Recognizer size — tiny/small/medium (default small; detector is always the same file unless --det-model)",
+            cxxopts::value<std::string>()->default_value("small"))
         ("angle", "Enable angle classification", cxxopts::value<bool>()->default_value("false"))
         ("cuda", "Request CUDA execution provider", cxxopts::value<bool>()->default_value("false"))
         ("tensorrt", "Request TensorRT execution provider", cxxopts::value<bool>()->default_value("false"))
