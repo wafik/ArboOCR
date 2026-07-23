@@ -16,7 +16,7 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.detBoxThresh == doctest::Approx(0.5));
     CHECK(cfg.detThresh == doctest::Approx(0.3));
     CHECK(cfg.detUnclipRatio == doctest::Approx(1.6));
-    CHECK(cfg.detLimitSideLen == 1536);
+    CHECK(cfg.detLimitSideLen == 960);
     CHECK(cfg.recBatchNum == 6);
     CHECK(cfg.useAngleCls == false);
     CHECK(cfg.useFp16 == true); // TensorRT FP16 default (was always-on)

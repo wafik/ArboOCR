@@ -34,7 +34,11 @@ struct EngineConfig {
     float detBoxThresh = 0.5f;
     float detThresh = 0.3f;
     float detUnclipRatio = 1.6f;
-    int detLimitSideLen = 1536;
+    // Longest image side for det resize. 960 measured better than 1536 on the
+// SROIE receipt smoke set (full-page sim ~87.7% vs ~85.9% with rec=small);
+// larger limits can over-fragment or over-merge on dense receipts. Override
+// for high-res pages if boxes look wrong.
+int detLimitSideLen = 960;
     // Crops per recognition inference call (PaddleOCR/RapidOCR default: 6).
     // Raise on GPU/TensorRT when VRAM allows; lower on tight CPU budgets.
     // Values are clamped to >= 1. TensorRT engine profiles are built against
