@@ -287,6 +287,25 @@ Helpers: `resolveModelPaths(cfg)` returns the four resolved paths without
 checking that files exist. Custom downloads: use `downloadFile(url, dest)`
 into those paths; `downloadOcrModels` still writes the default flat names only.
 
+### Low-contrast documents (CLAHE)
+
+Faded thermal-printer receipts and other low-contrast scans can cause the
+detector to miss text boxes entirely — no amount of recognizer accuracy
+fixes a box that was never detected. Set `useClahe = true` to apply CLAHE
+(Contrast Limited Adaptive Histogram Equalization) to the full image before
+detection:
+
+```cpp
+arbo::ocr::EngineConfig cfg;
+cfg.modelsDir = "models";
+cfg.useClahe = true; // boosts local contrast before the detector runs
+```
+
+Off by default — adds per-image CPU cost and isn't universally beneficial
+(can amplify noise on already-good scans). Only the detector's input image
+is enhanced; recognizer crops are taken from that same enhanced image for
+consistency, but the enhancement itself only ever runs once per page.
+
 ## API Reference
 
 ```cpp
@@ -316,6 +335,7 @@ struct EngineConfig {
     bool        useCuda      = false;
     bool        useTensorrt  = false;
     bool        useFp16      = true;      // TensorRT only — FP16 kernels (default on)
+    bool        useClahe     = false;     // CLAHE contrast boost before detection (faded/low-contrast docs)
     std::string trtCacheDir  = "models/trt_engines";
     std::string modelsDir    = "models";
     std::string detModelPath;   // empty = modelsDir/ocrVersion_det.onnx
