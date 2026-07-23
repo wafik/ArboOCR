@@ -119,6 +119,38 @@ TEST_CASE("sortLinesReadingOrder sorts by y then x") {
     CHECK(lines[2].text == "bottom");
 }
 
+TEST_CASE("injectGapSpaces inserts space on wide cross-class gap") {
+    // positions with a clear column gap between letter and digit clusters
+    std::vector<std::string> tokens = {"A", "B", "C", "D", "1", "2", "3", "4"};
+    std::vector<float> pos = {0.05f, 0.10f, 0.15f, 0.20f, 0.70f, 0.75f, 0.80f, 0.85f};
+    std::vector<float> scores(8, 0.9f);
+    injectGapSpaces(tokens, pos, &scores);
+    bool foundSpace = false;
+    for (const auto& t : tokens) if (t == " ") foundSpace = true;
+    CHECK(foundSpace);
+    CHECK(tokens.size() == scores.size());
+    CHECK(tokens.size() == pos.size());
+}
+
+TEST_CASE("refineDecodedText maps fullwidth colon and collapses spaces") {
+    // U+FF1A fullwidth colon = UTF-8 EF BC 9A (avoid \x in string literal for MSVC)
+    std::string s = "Tel";
+    s += static_cast<char>(0xEF);
+    s += static_cast<char>(0xBC);
+    s += static_cast<char>(0x9A);
+    s += "07  88";
+    refineDecodedText(s);
+    CHECK(s == "Tel:07 88");
+}
+
+TEST_CASE("keepByConfidence matches ppu dual bar") {
+    CHECK(keepByConfidence("TOTAL", 0.6f, 0.5f));
+    CHECK_FALSE(keepByConfidence("TOTAL", 0.4f, 0.5f));
+    CHECK(keepByConfidence("+-", 0.85f, 0.5f)); // symbol bar 0.8
+    CHECK_FALSE(keepByConfidence("+-", 0.7f, 0.5f));
+    CHECK(keepByConfidence("x", 0.1f, 0.0f)); // disabled
+}
+
 TEST_CASE("getRotateCropImage returns empty Mat for an empty source image, does not throw") {
     cv::Mat empty;
     std::vector<cv::Point> box = {{0, 0}, {10, 0}, {10, 10}, {0, 10}};

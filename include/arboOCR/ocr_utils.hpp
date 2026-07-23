@@ -69,4 +69,21 @@ std::vector<RawTextBox> expandOvermergedBoxes(const std::vector<RawTextBox>& box
 /// Stable reading order: top-to-bottom then left-to-right by polygon centroid.
 void sortLinesReadingOrder(std::vector<LinePrediction>& lines);
 
+/// CTC post: insert spaces where horizontal gaps between emitted tokens look
+/// like whitespace (columnar receipts). `positions` are 0..1 fractions of the
+/// crop width (timestep centers). Optional `scores` stays index-aligned.
+/// Mirrors ppu-paddle-ocr injectGapSpaces (median + 1.5/2.5 quanta).
+void injectGapSpaces(std::vector<std::string>& tokens,
+                     std::vector<float>& positions,
+                     std::vector<float>* scores = nullptr);
+
+/// Collapse space runs; map fullwidth ASCII/ideographic space → halfwidth when
+/// the string has no CJK. In-place. Mirrors ppu refineDecodedChars.
+void refineDecodedText(std::string& text);
+
+/// drop_score gate: alphanumeric text needs `minimumConfidence`; pure
+/// symbol/punct needs minimumConfidence+0.3 (capped at 1). `minimumConfidence
+/// <= 0` always keeps. Mirrors ppu BaseRecognitionService filter.
+bool keepByConfidence(const std::string& text, float confidence, float minimumConfidence);
+
 } // namespace arbo::ocr

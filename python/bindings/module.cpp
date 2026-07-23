@@ -102,6 +102,7 @@ PYBIND11_MODULE(_arboocr, m) {
         .def_readwrite("use_fp16", &EngineConfig::useFp16)
         .def_readwrite("use_clahe", &EngineConfig::useClahe)
         .def_readwrite("split_overmerged", &EngineConfig::splitOvermerged)
+        .def_readwrite("minimum_confidence", &EngineConfig::minimumConfidence)
         .def_readwrite("trt_cache_dir", &EngineConfig::trtCacheDir)
         .def_readwrite("models_dir", &EngineConfig::modelsDir)
         .def_readwrite("det_model_path", &EngineConfig::detModelPath)

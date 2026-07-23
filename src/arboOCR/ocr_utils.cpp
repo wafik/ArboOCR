@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <numeric>
 #include <utility>
 
@@ -386,6 +387,166 @@ void sortLinesReadingOrder(std::vector<LinePrediction>& lines) {
         }
         return ca.first < cb.first;
     });
+}
+
+namespace {
+
+// 0=letter-ish, 1=digit, 2=other — ASCII-first; multi-byte → letter-ish.
+int tokenClass(const std::string& tok) {
+    if (tok.empty()) return 2;
+    unsigned char c = static_cast<unsigned char>(tok[0]);
+    if (c >= '0' && c <= '9') return 1;
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 0;
+    if (c >= 0x80) return 0; // ponytail: treat UTF-8 lead as letter-ish
+    return 2;
+}
+
+bool isSpaceToken(const std::string& t) {
+    return t == " " || t == "\t";
+}
+
+// Decode next UTF-8 codepoint; advance i. Returns 0 on invalid/truncated.
+uint32_t nextCp(const std::string& s, size_t& i) {
+    if (i >= s.size()) return 0;
+    unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) {
+        ++i;
+        return c;
+    }
+    if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) {
+        uint32_t cp = (c & 0x1F) << 6;
+        cp |= static_cast<unsigned char>(s[i + 1]) & 0x3F;
+        i += 2;
+        return cp;
+    }
+    if ((c & 0xF0) == 0xE0 && i + 2 < s.size()) {
+        uint32_t cp = (c & 0x0F) << 12;
+        cp |= (static_cast<unsigned char>(s[i + 1]) & 0x3F) << 6;
+        cp |= static_cast<unsigned char>(s[i + 2]) & 0x3F;
+        i += 3;
+        return cp;
+    }
+    if ((c & 0xF8) == 0xF0 && i + 3 < s.size()) {
+        uint32_t cp = (c & 0x07) << 18;
+        cp |= (static_cast<unsigned char>(s[i + 1]) & 0x3F) << 12;
+        cp |= (static_cast<unsigned char>(s[i + 2]) & 0x3F) << 6;
+        cp |= static_cast<unsigned char>(s[i + 3]) & 0x3F;
+        i += 4;
+        return cp;
+    }
+    ++i;
+    return 0;
+}
+
+bool hasCjk(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        uint32_t cp = nextCp(s, i);
+        // CJK unified + kana + hangul + CJK compat (same idea as ppu)
+        if ((cp >= 0x2E80 && cp <= 0x9FFF) ||
+            (cp >= 0xAC00 && cp <= 0xD7AF) ||
+            (cp >= 0xF900 && cp <= 0xFAFF)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasLetterOrDigit(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        uint32_t cp = nextCp(s, i);
+        if ((cp >= '0' && cp <= '9') ||
+            (cp >= 'A' && cp <= 'Z') ||
+            (cp >= 'a' && cp <= 'z') ||
+            (cp >= 0xC0 && cp <= 0x24F) || // Latin extended (rough)
+            (cp >= 0x2E80 && cp <= 0x9FFF) ||
+            (cp >= 0xAC00 && cp <= 0xD7AF)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+void injectGapSpaces(std::vector<std::string>& tokens,
+                     std::vector<float>& positions,
+                     std::vector<float>* scores) {
+    if (tokens.size() < 4 || positions.size() != tokens.size()) return;
+    if (scores && scores->size() != tokens.size()) return;
+
+    std::vector<float> deltas;
+    deltas.reserve(positions.size());
+    for (size_t i = 1; i < positions.size(); ++i) {
+        deltas.push_back(positions[i] - positions[i - 1]);
+    }
+    std::vector<float> sorted = deltas;
+    std::sort(sorted.begin(), sorted.end());
+    const float median = sorted[sorted.size() / 2];
+    if (median <= 0.f) return;
+    float quantum = 0.f;
+    for (float d : sorted) {
+        if (d > 0.f) {
+            quantum = d;
+            break;
+        }
+    }
+    if (quantum <= 0.f) return;
+
+    constexpr float kCross = 1.5f;
+    constexpr float kSame = 2.5f;
+
+    for (size_t i = tokens.size(); i-- > 1;) {
+        const float prev = positions[i - 1];
+        const float curr = positions[i];
+        const float k = (tokenClass(tokens[i]) == tokenClass(tokens[i - 1])) ? kSame : kCross;
+        if (curr - prev > median + k * quantum &&
+            !isSpaceToken(tokens[i]) &&
+            !isSpaceToken(tokens[i - 1]) &&
+            tokens[i] != tokens[i - 1]) {
+            tokens.insert(tokens.begin() + static_cast<std::ptrdiff_t>(i), " ");
+            positions.insert(positions.begin() + static_cast<std::ptrdiff_t>(i), (prev + curr) * 0.5f);
+            if (scores) {
+                const float sc = ((*scores)[i - 1] + (*scores)[i]) * 0.5f;
+                scores->insert(scores->begin() + static_cast<std::ptrdiff_t>(i), sc);
+            }
+        }
+    }
+}
+
+void refineDecodedText(std::string& text) {
+    const bool cjk = hasCjk(text);
+    std::string out;
+    out.reserve(text.size());
+    bool prevSpace = false;
+    for (size_t i = 0; i < text.size();) {
+        size_t j = i;
+        uint32_t cp = nextCp(text, j);
+        if (cp == ' ' || cp == 0x3000) {
+            if (!prevSpace) out.push_back(' ');
+            prevSpace = true;
+            i = j;
+            continue;
+        }
+        prevSpace = false;
+        if (!cjk && cp >= 0xFF01 && cp <= 0xFF5E) {
+            out.push_back(static_cast<char>(cp - 0xFEE0));
+        } else {
+            out.append(text, i, j - i);
+        }
+        i = j;
+    }
+    text.swap(out);
+}
+
+bool keepByConfidence(const std::string& text, float confidence, float minimumConfidence) {
+    if (minimumConfidence <= 0.f) return true;
+    float bar = minimumConfidence;
+    if (!hasLetterOrDigit(text)) {
+        bar = std::min(1.f, minimumConfidence + 0.3f);
+    }
+    return confidence >= bar;
 }
 
 } // namespace arbo::ocr

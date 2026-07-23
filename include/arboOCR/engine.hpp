@@ -65,6 +65,10 @@ int detLimitSideLen = 960;
     // closed most of the full-page gap (~87.7% → ~94.4%); aggressive split
     // over-fragmented and lost ~1 pt. Enable when det clearly fuses fields.
     bool splitOvermerged = false;
+    // Drop lines whose recognition confidence is below this bar (Paddle
+    // drop_score / ppu minimumConfidence). Symbol-only text uses bar+0.3.
+    // 0 disables filtering (legacy RapidOcrOnnx keeps every box).
+    float minimumConfidence = 0.5f;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
     // Optional absolute/relative paths. Empty = use modelsDir + default names
