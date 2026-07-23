@@ -335,7 +335,7 @@ struct EngineConfig {
     float       detBoxThresh = 0.5f;
     float       detThresh    = 0.3f;
     float       detUnclipRatio = 1.6f;
-    int         detLimitSideLen = 1536;
+    int         detLimitSideLen = 960;   // det longest side (960 beat 1536 on SROIE smoke)
     int         recBatchNum  = 6;         // crops per rec inference (raise on GPU VRAM)
     bool        useAngleCls  = false;
     bool        useCuda      = false;
