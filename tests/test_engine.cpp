@@ -21,6 +21,7 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.useAngleCls == false);
     CHECK(cfg.useFp16 == true); // TensorRT FP16 default (was always-on)
     CHECK(cfg.useClahe == false);
+    CHECK(cfg.splitOvermerged == false);
     CHECK(cfg.detModelPath.empty());
     CHECK(cfg.clsModelPath.empty());
     CHECK(cfg.recModelPath.empty());

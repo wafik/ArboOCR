@@ -50,4 +50,23 @@ cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box);
 /// Rotate 180 degrees (used when Classifier detects upside-down text).
 cv::Mat matRotateClockWise180(cv::Mat src);
 
+/// Split wide det boxes that look like two side-by-side fields (common on
+/// receipts: "TEL …" + "CO NO …" fused into one DBNet box). Uses a vertical
+/// ink-gap in the perspective crop; returns the original box when no clean
+/// valley is found. `minAspect` = crop width/height threshold (default 3.5).
+/// `minGapDepth` = how much quieter the valley must be vs median column ink
+/// (0–1; default 0.35). Pure geometry — no recognizer.
+std::vector<RawTextBox> maybeSplitOvermergedBox(const RawTextBox& box,
+                                                const cv::Mat& src,
+                                                float minAspect = 3.5f,
+                                                float minGapDepth = 0.35f);
+
+/// Expand each box with maybeSplitOvermergedBox; order preserved (left then
+/// right when split). Empty src → identity.
+std::vector<RawTextBox> expandOvermergedBoxes(const std::vector<RawTextBox>& boxes,
+                                             const cv::Mat& src);
+
+/// Stable reading order: top-to-bottom then left-to-right by polygon centroid.
+void sortLinesReadingOrder(std::vector<LinePrediction>& lines);
+
 } // namespace arbo::ocr

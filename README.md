@@ -342,6 +342,7 @@ struct EngineConfig {
     bool        useTensorrt  = false;
     bool        useFp16      = true;      // TensorRT only — FP16 kernels (default on)
     bool        useClahe     = false;     // CLAHE contrast boost before detection (faded/low-contrast docs)
+    bool        splitOvermerged = false; // ink-gap split of wide fused det boxes (opt-in)
     std::string trtCacheDir  = "models/trt_engines";
     std::string modelsDir    = "models";
     std::string detModelPath;   // empty = modelsDir/ocrVersion_det.onnx

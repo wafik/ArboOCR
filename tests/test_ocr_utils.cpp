@@ -79,6 +79,46 @@ TEST_CASE("getRotateCropImage returns empty Mat for a box outside image bounds, 
     CHECK(result.empty());
 }
 
+TEST_CASE("maybeSplitOvermergedBox splits wide crop with ink gap") {
+    // White background, two dark text blocks with a clear gap in the middle.
+    cv::Mat src(40, 200, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::rectangle(src, cv::Rect(5, 5, 70, 30), cv::Scalar(20, 20, 20), cv::FILLED);
+    cv::rectangle(src, cv::Rect(125, 5, 70, 30), cv::Scalar(20, 20, 20), cv::FILLED);
+    RawTextBox box;
+    box.boxPoint = {{0, 0}, {200, 0}, {200, 40}, {0, 40}};
+    box.score = 0.9f;
+    auto parts = maybeSplitOvermergedBox(box, src, /*minAspect=*/3.0f, /*minGapDepth=*/0.3f);
+    REQUIRE(parts.size() == 2);
+    CHECK(parts[0].score == doctest::Approx(0.9f));
+    CHECK(parts[1].score == doctest::Approx(0.9f));
+}
+
+TEST_CASE("maybeSplitOvermergedBox keeps short box intact") {
+    cv::Mat src(40, 60, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::rectangle(src, cv::Rect(5, 5, 50, 30), cv::Scalar(20, 20, 20), cv::FILLED);
+    RawTextBox box;
+    box.boxPoint = {{0, 0}, {60, 0}, {60, 40}, {0, 40}};
+    box.score = 0.8f;
+    auto parts = maybeSplitOvermergedBox(box, src);
+    REQUIRE(parts.size() == 1);
+}
+
+TEST_CASE("sortLinesReadingOrder sorts by y then x") {
+    LinePrediction a, b, c;
+    a.polygon = {{100, 10}, {140, 10}, {140, 20}, {100, 20}};
+    a.text = "right-top";
+    b.polygon = {{10, 10}, {50, 10}, {50, 20}, {10, 20}};
+    b.text = "left-top";
+    c.polygon = {{10, 40}, {50, 40}, {50, 50}, {10, 50}};
+    c.text = "bottom";
+    std::vector<LinePrediction> lines = {a, c, b};
+    sortLinesReadingOrder(lines);
+    REQUIRE(lines.size() == 3);
+    CHECK(lines[0].text == "left-top");
+    CHECK(lines[1].text == "right-top");
+    CHECK(lines[2].text == "bottom");
+}
+
 TEST_CASE("getRotateCropImage returns empty Mat for an empty source image, does not throw") {
     cv::Mat empty;
     std::vector<cv::Point> box = {{0, 0}, {10, 0}, {10, 10}, {0, 10}};

@@ -27,6 +27,8 @@ class TestArboocrSmoke(unittest.TestCase):
         self.assertEqual(cfg.model_type, "small")
         self.assertEqual(cfg.rec_batch_num, 6)
         self.assertTrue(cfg.use_fp16)
+        self.assertFalse(cfg.use_clahe)
+        self.assertFalse(cfg.split_overmerged)
         self.assertEqual(cfg.models_dir, "models")
         self.assertEqual(cfg.det_model_path, "")
         self.assertEqual(cfg.rec_model_path, "")

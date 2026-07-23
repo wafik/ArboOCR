@@ -60,6 +60,11 @@ int detLimitSideLen = 960;
     // adds per-image CPU cost and isn't universally beneficial (can
     // amplify noise on already-good scans). See preprocess.hpp::applyClahe.
     bool useClahe = false;
+    // Split wide det boxes that look like two side-by-side fields (ink-gap
+    // heuristic). Default off: on the SROIE smoke set, reading-order sort alone
+    // closed most of the full-page gap (~87.7% → ~94.4%); aggressive split
+    // over-fragmented and lost ~1 pt. Enable when det clearly fuses fields.
+    bool splitOvermerged = false;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
     // Optional absolute/relative paths. Empty = use modelsDir + default names
