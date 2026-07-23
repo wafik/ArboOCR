@@ -78,7 +78,8 @@ PYBIND11_MODULE(_arboocr, m) {
         .def(py::init<>())
         .def_readwrite("polygon", &LinePrediction::polygon)
         .def_readwrite("text", &LinePrediction::text)
-        .def_readwrite("score", &LinePrediction::score);
+        .def_readwrite("score", &LinePrediction::score)
+        .def_readwrite("det_score", &LinePrediction::detScore);
 
     py::class_<PagePrediction>(m, "PagePrediction")
         .def(py::init<>())

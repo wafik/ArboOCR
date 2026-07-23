@@ -57,8 +57,11 @@ class TestArboocrSmoke(unittest.TestCase):
         line = LinePrediction()
         line.text = "hi"
         line.score = 0.9
+        line.det_score = 0.8
         line.polygon = [Point2f(1.0, 2.0), Point2f(3.0, 4.0)]
         self.assertEqual(line.text, "hi")
+        self.assertAlmostEqual(line.score, 0.9)
+        self.assertAlmostEqual(line.det_score, 0.8)
         self.assertEqual(len(line.polygon), 2)
 
 
