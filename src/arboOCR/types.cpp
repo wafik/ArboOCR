@@ -63,12 +63,13 @@ void appendLine(std::ostringstream& os, const LinePrediction& line, bool pretty,
         os << "{\n"
            << padIn << "\"text\":\"" << escapeJson(line.text) << "\",\n"
            << padIn << "\"score\":" << line.score << ",\n"
+           << padIn << "\"detScore\":" << line.detScore << ",\n"
            << padIn << "\"polygon\":";
         appendPolygon(os, line.polygon, true, indent + 2);
         os << "\n" << pad << "}";
     } else {
         os << "{\"text\":\"" << escapeJson(line.text) << "\",\"score\":" << line.score
-           << ",\"polygon\":";
+           << ",\"detScore\":" << line.detScore << ",\"polygon\":";
         appendPolygon(os, line.polygon, false, 0);
         os << "}";
     }
@@ -78,14 +79,15 @@ void appendLine(std::ostringstream& os, const LinePrediction& line, bool pretty,
 
 std::string toJson(const LinePrediction& line, bool pretty) {
     std::ostringstream os;
-    os << std::setprecision(8);
+    // defaultfloat + 6 significant digits keeps 0.9f as "0.9" (not binary noise).
+    os << std::setprecision(6);
     appendLine(os, line, pretty, 0);
     return os.str();
 }
 
 std::string toJson(const PagePrediction& page, bool pretty) {
     std::ostringstream os;
-    os << std::setprecision(8);
+    os << std::setprecision(6);
     if (pretty) {
         os << "{\n"
            << "  \"image\":\"" << escapeJson(page.image) << "\",\n"

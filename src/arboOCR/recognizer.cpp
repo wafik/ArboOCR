@@ -123,9 +123,13 @@ bool Recognizer::loadKeysFromModelMetadata() {
 
 RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w) const {
     auto keySize = keys_.size();
-    std::string text;
+    // Per-token decode so gap-space injection can use CTC timestep positions
+    // (ppu injectGapSpaces). keys_ entries may be multi-byte UTF-8.
+    std::vector<std::string> tokens;
     std::vector<float> scores;
+    std::vector<float> positions;
     size_t lastIndex = 0;
+    const float invH = h > 0 ? 1.f / static_cast<float>(h) : 1.f;
 
     for (size_t i = 0; i < h; i++) {
         size_t start = i * w;
@@ -139,10 +143,16 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
 
         if (maxIndex > 0 && maxIndex < keySize && !(i > 0 && maxIndex == lastIndex)) {
             scores.push_back(maxValue);
-            text += keys_[maxIndex];
+            tokens.push_back(keys_[maxIndex]);
+            positions.push_back((static_cast<float>(i) + 0.5f) * invH);
         }
         lastIndex = maxIndex;
     }
+    injectGapSpaces(tokens, positions, &scores);
+    std::string text;
+    text.reserve(tokens.size() * 2);
+    for (const auto& t : tokens) text += t;
+    refineDecodedText(text);
     return {text, scores};
 }
 

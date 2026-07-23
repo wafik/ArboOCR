@@ -24,9 +24,12 @@ class TestArboocrSmoke(unittest.TestCase):
     def test_config_defaults(self):
         cfg = EngineConfig()
         self.assertEqual(cfg.ocr_version, "PP-OCRv6")
-        self.assertEqual(cfg.model_type, "medium")
+        self.assertEqual(cfg.model_type, "small")
         self.assertEqual(cfg.rec_batch_num, 6)
         self.assertTrue(cfg.use_fp16)
+        self.assertFalse(cfg.use_clahe)
+        self.assertFalse(cfg.split_overmerged)
+        self.assertAlmostEqual(cfg.minimum_confidence, 0.5)
         self.assertEqual(cfg.models_dir, "models")
         self.assertEqual(cfg.det_model_path, "")
         self.assertEqual(cfg.rec_model_path, "")
@@ -57,8 +60,11 @@ class TestArboocrSmoke(unittest.TestCase):
         line = LinePrediction()
         line.text = "hi"
         line.score = 0.9
+        line.det_score = 0.8
         line.polygon = [Point2f(1.0, 2.0), Point2f(3.0, 4.0)]
         self.assertEqual(line.text, "hi")
+        self.assertAlmostEqual(line.score, 0.9)
+        self.assertAlmostEqual(line.det_score, 0.8)
         self.assertEqual(len(line.polygon), 2)
 
 

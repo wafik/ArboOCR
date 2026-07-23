@@ -248,11 +248,17 @@ aren't stable across mirrors, so the caller picks the source.
 **recognizer** size only — the detector has no size variants, it's always
 the single `PP-OCRv6_det.onnx` file.
 
+**Defaults:** `modelType` defaults to `small` (CPU). Prefer `tiny` for
+throughput, `medium` only when you have GPU/TensorRT headroom and have
+measured a real accuracy win on *your* data. Detection always loads
+`<ocrVersion>_det.onnx` unless you set `detModelPath` (there is no
+`modelType`-selected det file).
+
 | modelType | File size | CPU latency* | Accuracy |
 |---|---|---|---|
 | `tiny` | 4.3 MB | fastest | occasional misreads on real-world noise |
-| `small` | ~20 MB | middle ground | untested — worth trying if `medium` is too slow |
-| `medium` (**default**) | 73 MB | ~5x slower than tiny | most accurate |
+| `small` (**default**) | ~20 MB | middle ground | CPU-honest default (SROIE smoke) |
+| `medium` | 73 MB | ~5x slower than tiny | try with GPU when measured win |
 
 <sub>*Measured on a Jetson Nano CPU fallback, single sample image. TensorRT/CUDA narrow this gap significantly.</sub>
 
@@ -325,17 +331,19 @@ image.
 ```cpp
 struct EngineConfig {
     std::string ocrVersion   = "PP-OCRv6";
-    std::string modelType    = "medium";  // recognizer size: tiny | small | medium
+    std::string modelType    = "small";   // recognizer size: tiny | small | medium
     float       detBoxThresh = 0.5f;
     float       detThresh    = 0.3f;
     float       detUnclipRatio = 1.6f;
-    int         detLimitSideLen = 1536;
+    int         detLimitSideLen = 960;   // det longest side (960 beat 1536 on SROIE smoke)
     int         recBatchNum  = 6;         // crops per rec inference (raise on GPU VRAM)
     bool        useAngleCls  = false;
     bool        useCuda      = false;
     bool        useTensorrt  = false;
     bool        useFp16      = true;      // TensorRT only — FP16 kernels (default on)
     bool        useClahe     = false;     // CLAHE contrast boost before detection (faded/low-contrast docs)
+    bool        splitOvermerged = false; // ink-gap split of wide fused det boxes (opt-in)
+    float       minimumConfidence = 0.5f; // drop low-conf lines (0 = keep all)
     std::string trtCacheDir  = "models/trt_engines";
     std::string modelsDir    = "models";
     std::string detModelPath;   // empty = modelsDir/ocrVersion_det.onnx

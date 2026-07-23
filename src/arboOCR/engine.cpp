@@ -117,6 +117,9 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         cv::Mat prepped = config_.useClahe ? applyClahe(src) : src;
         ScaleParam scale = getScaleParam(prepped, config_.detLimitSideLen);
         auto textBoxes = detector_.getTextBoxes(prepped, scale, config_.detBoxThresh, config_.detThresh, config_.detUnclipRatio);
+        if (config_.splitOvermerged) {
+            textBoxes = expandOvermergedBoxes(textBoxes, prepped);
+        }
 
         std::vector<cv::Mat> partImages;
         partImages.reserve(textBoxes.size());
@@ -134,12 +137,21 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         auto textLines = recognizer_.getTextLines(partImages);
 
         for (size_t i = 0; i < textBoxes.size(); i++) {
+            const float recScore = (i < textLines.size())
+                ? meanRecScore(textLines[i].charScores)
+                : 0.0f;
+            const std::string& text = (i < textLines.size()) ? textLines[i].text : std::string{};
+            if (!keepByConfidence(text, recScore, config_.minimumConfidence)) {
+                continue;
+            }
             result.lines.push_back(LinePrediction{
                 cvPointsToPolygon(textBoxes[i].boxPoint),
-                textLines[i].text,
+                text,
+                recScore,
                 textBoxes[i].score,
             });
         }
+        sortLinesReadingOrder(result.lines);
         log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");
     } catch (const std::exception& ex) {
         log(LogLevel::Error, std::string("recognize failed: ") + ex.what());

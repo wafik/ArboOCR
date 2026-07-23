@@ -44,12 +44,24 @@ struct Point2f {
 };
 using Polygon = std::vector<Point2f>;
 
-// One recognized text line: its polygon, decoded text, and detection score.
+// One recognized text line: polygon, decoded text, recognition confidence,
+// and detector box score.
 struct LinePrediction {
     Polygon polygon;
     std::string text;
+    /// Mean CTC character confidence from the recognizer (0 if no chars).
     float score = 0.0f;
+    /// Detector box score for this polygon (0 if unknown).
+    float detScore = 0.0f;
 };
+
+/// Mean of per-character CTC scores; empty → 0. Used to fill LinePrediction::score.
+inline float meanRecScore(const std::vector<float>& charScores) {
+    if (charScores.empty()) return 0.0f;
+    float sum = 0.0f;
+    for (float s : charScores) sum += s;
+    return sum / static_cast<float>(charScores.size());
+}
 
 // Full-page recognition result.
 struct PagePrediction {
