@@ -134,9 +134,14 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         auto textLines = recognizer_.getTextLines(partImages);
 
         for (size_t i = 0; i < textBoxes.size(); i++) {
+            const float recScore = (i < textLines.size())
+                ? meanRecScore(textLines[i].charScores)
+                : 0.0f;
+            const std::string& text = (i < textLines.size()) ? textLines[i].text : std::string{};
             result.lines.push_back(LinePrediction{
                 cvPointsToPolygon(textBoxes[i].boxPoint),
-                textLines[i].text,
+                text,
+                recScore,
                 textBoxes[i].score,
             });
         }

@@ -89,6 +89,28 @@ TEST_CASE("LinePrediction and PagePrediction default-construct cleanly") {
     CHECK(pp.elapsedMs == doctest::Approx(0.0f));
 }
 
+TEST_CASE("LinePrediction defaults include detScore") {
+    LinePrediction lp;
+    CHECK(lp.score == doctest::Approx(0.0f));
+    CHECK(lp.detScore == doctest::Approx(0.0f));
+}
+
+TEST_CASE("toJson includes detScore") {
+    LinePrediction line;
+    line.text = "ab";
+    line.score = 0.9f;
+    line.detScore = 0.7f;
+    line.polygon = {{1.f, 2.f}, {3.f, 4.f}, {5.f, 6.f}, {7.f, 8.f}};
+    const std::string json = toJson(line);
+    CHECK(json.find("\"score\":0.9") != std::string::npos);
+    CHECK(json.find("\"detScore\":0.7") != std::string::npos);
+}
+
+TEST_CASE("meanRecScore averages char scores and empty is 0") {
+    CHECK(meanRecScore({}) == doctest::Approx(0.0f));
+    CHECK(meanRecScore(std::vector<float>{0.5f, 1.0f}) == doctest::Approx(0.75f));
+}
+
 TEST_CASE("toJson serializes page with polygon, score, and escaped text") {
     PagePrediction page;
     page.image = "a\"b\\c";
@@ -96,7 +118,8 @@ TEST_CASE("toJson serializes page with polygon, score, and escaped text") {
     page.lines.push_back(LinePrediction{
         {{1.0f, 2.0f}, {3.0f, 4.0f}, {5.0f, 6.0f}, {7.0f, 8.0f}},
         "hello\nworld",
-        0.91f,
+        0.91f,  // score (rec)
+        0.0f,   // detScore
     });
 
     const std::string json = toJson(page);

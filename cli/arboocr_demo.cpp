@@ -67,7 +67,8 @@ int main(int argc, char* argv[]) {
     for (size_t i = 0; i < page.lines.size(); i++) {
         const auto& line = page.lines[i];
         std::cout << "  [" << i << "] \"" << line.text
-                  << "\" (score=" << line.score << ")";
+                  << "\" (score=" << line.score
+                  << " detScore=" << line.detScore << ")";
         if (!line.polygon.empty()) {
             std::cout << " poly=[";
             for (size_t p = 0; p < line.polygon.size(); p++) {
