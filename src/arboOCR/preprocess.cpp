@@ -1,6 +1,8 @@
 // Original arboOCR code (not a RapidOcrOnnx port) — see preprocess.hpp.
 #include "arboOCR/preprocess.hpp"
 
+#include <vector>
+
 #include <opencv2/imgproc.hpp>
 
 namespace arbo::ocr {
@@ -8,6 +10,7 @@ namespace arbo::ocr {
 cv::Mat applyClahe(const cv::Mat& src) {
     if (src.empty()) return src;
     if (src.channels() != 1 && src.channels() != 3) return src;
+    if (src.depth() != CV_8U) return src;
 
     auto clahe = cv::createCLAHE(/*clipLimit=*/2.0, cv::Size(8, 8));
 

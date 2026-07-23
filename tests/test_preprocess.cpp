@@ -58,3 +58,13 @@ TEST_CASE("applyClahe on an unsupported channel count returns input unchanged") 
     CHECK(out.rows == 20);
     CHECK(out.cols == 20);
 }
+
+TEST_CASE("applyClahe on an unsupported depth (float) returns input unchanged, does not throw") {
+    cv::Mat img(20, 20, CV_32FC3, cv::Scalar(0.1f, 0.2f, 0.3f));
+    cv::Mat out;
+    CHECK_NOTHROW(out = applyClahe(img));
+    CHECK(out.depth() == CV_32F);
+    CHECK(out.channels() == 3);
+    CHECK(out.rows == 20);
+    CHECK(out.cols == 20);
+}
