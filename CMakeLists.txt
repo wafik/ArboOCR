@@ -41,6 +41,7 @@ target_include_directories(arboocr_clipper PUBLIC vendor/rapidocronnx)
 add_library(arboOCR STATIC
     src/arboOCR/ort_provider_utils.cpp
     src/arboOCR/ocr_utils.cpp
+    src/arboOCR/preprocess.cpp
     src/arboOCR/detector.cpp
     src/arboOCR/classifier.cpp
     src/arboOCR/recognizer.cpp
@@ -67,6 +68,7 @@ enable_testing()
 add_executable(arboocr_tests
     tests/test_main.cpp
     tests/test_ocr_utils.cpp
+    tests/test_preprocess.cpp
     tests/test_detector.cpp
     tests/test_classifier.cpp
     tests/test_recognizer.cpp
