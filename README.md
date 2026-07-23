@@ -254,13 +254,13 @@ measured a real accuracy win on *your* data. Detection always loads
 `<ocrVersion>_det.onnx` unless you set `detModelPath` (there is no
 `modelType`-selected det file).
 
-| modelType | File size | CPU latency* | Accuracy |
+| modelType | File size | CPU latency (SROIE warm*) | Full-page sim* |
 |---|---|---|---|
-| `tiny` | 4.3 MB | fastest | occasional misreads on real-world noise |
-| `small` (**default**) | ~20 MB | middle ground | CPU-honest default (SROIE smoke) |
-| `medium` | 73 MB | ~5x slower than tiny | try with GPU when measured win |
+| `tiny` | 4.3 MB | ~165 ms | ~93.3% |
+| `small` (**default**) | ~20 MB | ~530 ms | ~94.4% |
+| `medium` | 73 MB | ~2120 ms (~4× small) | ~94.8% |
 
-<sub>*Measured on a Jetson Nano CPU fallback, single sample image. TensorRT/CUDA narrow this gap significantly.</sub>
+<sub>*Warm Python Engine on a Windows CPU, 5 SROIE receipt images (char similarity vs box GT). Jetson / TensorRT/CUDA change absolute ms; relative ranking of sizes is the point.</sub>
 
 We tested this on a real scanned receipt: `tiny` misread "Melawai" as
 "Melavwai" and "Atas nama" as "Atasnama"; `medium` got both right with no
@@ -311,6 +311,66 @@ Off by default — adds per-image CPU cost and isn't universally beneficial
 (can amplify noise on already-good scans). Only the detector's input image
 is enhanced; recognizer crops are taken from that same enhanced image for
 consistency, but the enhancement itself only ever runs once per page.
+
+### Accuracy defaults (read this if you upgrade)
+
+These defaults changed in a recent accuracy cycle. **Impact is large** on
+full-page text quality (SROIE receipt smoke: cold arbo small **~84% → ~94%**
+char similarity, within ~0.2 pts of a TS PaddleOCR port on the same images).
+If you pin config or re-implement the pipeline yourself, note every item.
+
+| Setting | Old | New default | Why it matters |
+|---------|-----|-------------|----------------|
+| `modelType` | `medium` | **`small`** | Medium is ~4× slower on CPU with little sim gain on receipts. Use medium only after measuring on *your* data (GPU helps). |
+| `detLimitSideLen` | `1536` | **`960`** | Longest side for det resize. 1536 over-merged / hurt full-page score on dense receipts; 960 recovered ~2 pts. Override for very high-res pages if boxes look wrong. |
+| Reading order | det order only | **always sorted** (centroid y then x) | Full-page string metrics and human reading depend on order. `page.lines` is now top→bottom, left→right — **not** raw detector order. |
+| CTC post | greedy only | **gap→space + fullwidth→ASCII** | Spaces injected where CTC timesteps show wide gaps (columnar fields). Fullwidth punctuation (e.g. `：`) maps to ASCII on non-CJK text. Always on in the recognizer. |
+| `minimumConfidence` | (none) | **`0.5`** | Drops low-confidence lines (Paddle `drop_score`). Pure symbol lines need **0.8**. Set `0` to keep every box (legacy). |
+| `splitOvermerged` | n/a | **`false`** | Optional ink-gap split of wide fused det boxes. **Off** by default — aggressive split *lost* ~1 pt on the smoke set. Enable only when det clearly fuses side-by-side fields. |
+| `LinePrediction.score` | det-ish / unclear | **rec mean CTC conf** | New `detScore` holds the detector box score. JSON / Python: `score` + `det_score`. |
+| CLI `--model-type` | medium | **small** | Matches library default. |
+
+**Measured (warm Python `Engine`, CPU, 5 SROIE receipts, char sim vs box GT):**
+
+| Engine | Size | Avg sim | Avg ms |
+|--------|------|--------:|-------:|
+| arbo | tiny | 93.3% | ~165 |
+| arbo | **small** | **94.4%** | ~530 |
+| arbo | medium | 94.8% | ~2120 |
+| ppu-paddle-ocr (ref) | small | 94.6% | ~793 |
+
+**What to watch when integrating**
+
+1. **Line order changed.** Anything that assumed detector emission order (or
+   matched boxes by index against an old dump) must use polygon geometry or
+   re-sort the same way.
+2. **`minimumConfidence = 0.5` drops lines.** Low-contrast logos, rules read as
+   `+-`, and weak boxes disappear from `page.lines`. For audit dumps that need
+   every box, set `minimumConfidence = 0`.
+3. **Do not “fix accuracy” by switching to medium first.** Diagnosis on the
+   smoke set: matched-line rec was already ~97%; the gap was layout / order /
+   det scale, not rec capacity. Medium buys ~+0.4 pts for ~4× latency on CPU.
+4. **`detLimitSideLen` is not “bigger = better”.** Try 960 before 1280/1536 on
+   receipts; re-measure if your docs are posters or A3 scans.
+5. **Det file is still one size.** `modelType` only selects the recognizer.
+   Pairing `det_small` / `det_medium` ONNX via `detModelPath` did not help on
+   the smoke set; keep the default `*_det.onnx` unless you A/B otherwise.
+6. **Breaking for score consumers.** If you treated `score` as det confidence,
+   switch to `detScore` / `det_score`.
+7. **Opt-in only:** `useClahe`, `useAngleCls`, `splitOvermerged` — leave off
+   unless the failure mode matches (faded scans / 180° / confirmed over-merge).
+
+```cpp
+// Typical production CPU defaults after the accuracy cycle (these are already
+// the EngineConfig defaults — shown explicitly for upgrades):
+arbo::ocr::EngineConfig cfg;
+cfg.modelsDir = "models";
+cfg.modelType = "small";
+cfg.detLimitSideLen = 960;
+cfg.minimumConfidence = 0.5f;  // 0 = keep all boxes
+// cfg.splitOvermerged = true; // only if side-by-side fields fuse
+// cfg.useClahe = true;        // only if det misses low-contrast text
+```
 
 ## API Reference
 
