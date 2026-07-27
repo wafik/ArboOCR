@@ -112,4 +112,33 @@ std::string toJson(const PagePrediction& page, bool pretty) {
     return os.str();
 }
 
+std::string toJson(const PagePrediction& page, const std::string& backend, bool pretty) {
+    std::ostringstream os;
+    os << std::setprecision(6);
+    if (pretty) {
+        os << "{\n"
+           << "  \"backend\":\"" << escapeJson(backend) << "\",\n"
+           << "  \"image\":\"" << escapeJson(page.image) << "\",\n"
+           << "  \"elapsedMs\":" << page.elapsedMs << ",\n"
+           << "  \"lines\":[\n";
+        for (size_t i = 0; i < page.lines.size(); i++) {
+            os << "    ";
+            appendLine(os, page.lines[i], true, 4);
+            if (i + 1 < page.lines.size()) os << ",";
+            os << "\n";
+        }
+        os << "  ]\n}";
+    } else {
+        os << "{\"backend\":\"" << escapeJson(backend) << "\",\"image\":\""
+           << escapeJson(page.image) << "\",\"elapsedMs\":"
+           << page.elapsedMs << ",\"lines\":[";
+        for (size_t i = 0; i < page.lines.size(); i++) {
+            if (i) os << ",";
+            appendLine(os, page.lines[i], false, 0);
+        }
+        os << "]}";
+    }
+    return os.str();
+}
+
 } // namespace arbo::ocr

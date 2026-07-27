@@ -145,6 +145,35 @@ TEST_CASE("toJson on empty page is valid object") {
     CHECK(json == "{\"image\":\"none.jpg\",\"elapsedMs\":0,\"lines\":[]}");
 }
 
+TEST_CASE("toJson with backend includes backend field before image") {
+    PagePrediction page;
+    page.image = "page.jpg";
+    page.elapsedMs = 12.5f;
+    page.lines.push_back(LinePrediction{
+        {{1.0f, 2.0f}, {3.0f, 4.0f}, {5.0f, 6.0f}, {7.0f, 8.0f}},
+        "hi",
+        0.9f,
+        0.8f,
+    });
+
+    const std::string json = toJson(page, std::string("cpu"));
+    CHECK(json.find("\"backend\":\"cpu\"") != std::string::npos);
+    CHECK(json.find("\"image\":\"page.jpg\"") != std::string::npos);
+    // backend must come before image in the object
+    CHECK(json.find("\"backend\"") < json.find("\"image\""));
+
+    const std::string pretty = toJson(page, std::string("tensorrt"), true);
+    CHECK(pretty.find("\"backend\":\"tensorrt\"") != std::string::npos);
+    CHECK(pretty.find('\n') != std::string::npos);
+}
+
+TEST_CASE("toJson with backend on empty page is valid object") {
+    PagePrediction empty;
+    empty.image = "none.jpg";
+    const std::string json = toJson(empty, std::string("cpu"));
+    CHECK(json == "{\"backend\":\"cpu\",\"image\":\"none.jpg\",\"elapsedMs\":0,\"lines\":[]}");
+}
+
 TEST_CASE("Recognizer setRecBatchNum clamps and reports") {
     Recognizer rec;
     CHECK(rec.recBatchNum() == 6);
