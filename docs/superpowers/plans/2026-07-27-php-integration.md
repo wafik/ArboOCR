@@ -92,13 +92,13 @@ TEST_CASE("toJson with backend includes backend field before image") {
         0.8f,
     });
 
-    const std::string json = toJson(page, "cpu");
+    const std::string json = toJson(page, std::string("cpu"));
     CHECK(json.find("\"backend\":\"cpu\"") != std::string::npos);
     CHECK(json.find("\"image\":\"page.jpg\"") != std::string::npos);
     // backend must come before image in the object
     CHECK(json.find("\"backend\"") < json.find("\"image\""));
 
-    const std::string pretty = toJson(page, "tensorrt", true);
+    const std::string pretty = toJson(page, std::string("tensorrt"), true);
     CHECK(pretty.find("\"backend\":\"tensorrt\"") != std::string::npos);
     CHECK(pretty.find('\n') != std::string::npos);
 }
@@ -106,15 +106,29 @@ TEST_CASE("toJson with backend includes backend field before image") {
 TEST_CASE("toJson with backend on empty page is valid object") {
     PagePrediction empty;
     empty.image = "none.jpg";
-    const std::string json = toJson(empty, "cpu");
+    const std::string json = toJson(empty, std::string("cpu"));
     CHECK(json == "{\"backend\":\"cpu\",\"image\":\"none.jpg\",\"elapsedMs\":0,\"lines\":[]}");
 }
 ```
 
+**Overload resolution note:** the test calls above use explicit
+`std::string("cpu")`, not a bare string literal `"cpu"`. This is
+deliberate: with a bare `const char*` literal, C++ overload resolution
+prefers the existing `toJson(page, bool pretty)` overload (pointer→bool is
+a standard conversion) over the new `toJson(page, const std::string&,
+bool)` overload (which needs a user-defined `const char*`→`std::string`
+conversion) — so a literal would silently call the *old* overload with
+`pretty=true` instead of failing to compile. Always pass an explicit
+`std::string` in these tests. The real call site (Task 2's CLI, via
+`engine.backend()`) is unaffected — `Engine::backend()` returns
+`std::string`, which has no implicit conversion to `bool`, so it binds to
+the new overload unambiguously.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cmake --build build/windows-x64 --config Release --target arboocr_tests`
-Expected: FAIL to compile — `toJson(page, "cpu")` has no matching 2-arg-plus-string overload (only `toJson(page, bool pretty)` exists, and `"cpu"` won't implicitly convert to `bool` cleanly enough to match intent — this must fail as a missing-overload compile error, not silently pick the wrong overload; if it compiles, stop and re-check the signature before proceeding).
+Expected: FAIL to compile — no `toJson` overload yet accepts a `std::string`
+as the second argument (only `toJson(page, bool pretty)` exists so far).
 
 - [ ] **Step 3: Declare the new overload**
 
