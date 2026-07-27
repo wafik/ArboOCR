@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+        shell: pwsh
+
+      - name: Configure
+        run: cmake --preset windows-x64
+        shell: pwsh
+        env:
+          VCPKG_ROOT: C:\vcpkg
+
+      - name: Build arboocr_demo
+        run: cmake --build build/windows-x64 --config Release --target arboocr_demo
+        shell: pwsh
+
+      - name: Package
+        run: |
+          $out = "package/arboocr-windows-x64"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "build/windows-x64/Release/*.exe" $out
+          Copy-Item "build/windows-x64/Release/*.dll" $out
+          Copy-Item "LICENSE" $out
+          Copy-Item "THIRD_PARTY_NOTICES.md" $out
+          Compress-Archive -Path "$out/*" -DestinationPath "arboocr-windows-x64.zip"
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arboocr-windows-x64
+          path: arboocr-windows-x64.zip
+
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
+          /opt/vcpkg/bootstrap-vcpkg.sh
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: cmake --preset linux-x64
+        env:
+          VCPKG_ROOT: /opt/vcpkg
+
+      - name: Build arboocr_demo
+        run: cmake --build build/linux-x64 --target arboocr_demo
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          out="package/arboocr-linux-x64"
+          mkdir -p "$out"
+          bin="build/linux-x64/arboocr_demo"
+          cp "$bin" "$out/"
+          # Bundle every shared lib the binary resolves outside system dirs
+          # (vcpkg-built onnxruntime/opencv/curl and their deps), and point
+          # the binary at them via a relative RPATH so it's self-contained.
+          ldd "$bin" | awk '{print $3}' | grep -E '^/' | grep -v -E '^/lib|^/usr/lib' | while read -r lib; do
+            cp -L "$lib" "$out/"
+          done
+          cp LICENSE THIRD_PARTY_NOTICES.md "$out/"
+          patchelf --set-rpath '$ORIGIN' "$out/arboocr_demo" || true
+          tar czf arboocr-linux-x64.tar.gz -C package arboocr-linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arboocr-linux-x64
+          path: arboocr-linux-x64.tar.gz
+
+  publish:
+    needs: [windows-x64, linux-x64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/arboocr-windows-x64.zip
+            dist/arboocr-linux-x64.tar.gz
