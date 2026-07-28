@@ -74,6 +74,12 @@ struct PagePrediction {
 /// Never throws. When `pretty` is true, uses multi-line indented output.
 std::string toJson(const PagePrediction& page, bool pretty = false);
 
+/// Same as toJson(page, pretty) but includes a "backend" field (e.g.
+/// "cpu"/"cuda"/"tensorrt") — Engine::backend() isn't part of PagePrediction,
+/// so callers that want it in the JSON (e.g. the CLI's --json mode) use this
+/// overload instead of splicing it in themselves.
+std::string toJson(const PagePrediction& page, const std::string& backend, bool pretty = false);
+
 /// Serialize a single line prediction to a JSON object string.
 std::string toJson(const LinePrediction& line, bool pretty = false);
 

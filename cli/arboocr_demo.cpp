@@ -24,6 +24,8 @@ int main(int argc, char* argv[]) {
             cxxopts::value<bool>()->default_value("true"))
         ("clahe", "Apply CLAHE contrast enhancement before detection (helps low-contrast/faded documents)",
             cxxopts::value<bool>()->default_value("false"))
+        ("json", "Print machine-readable JSON (only JSON on stdout; suppresses the human-readable lines)",
+            cxxopts::value<bool>()->default_value("false"))
         ("det-model", "Override detector ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("cls-model", "Override classifier ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("rec-model", "Override recognizer ONNX path", cxxopts::value<std::string>()->default_value(""))
@@ -51,10 +53,22 @@ int main(int argc, char* argv[]) {
     cfg.recModelPath = result["rec-model"].as<std::string>();
     cfg.dictPath = result["dict"].as<std::string>();
 
+    const bool jsonMode = result["json"].as<bool>();
+
     arbo::ocr::Engine engine(cfg);
-    std::cout << "Backend: " << engine.backend() << "\n";
+    if (!jsonMode) {
+        std::cout << "Backend: " << engine.backend() << "\n";
+    }
 
     auto page = engine.recognize(result["image"].as<std::string>());
+
+    if (jsonMode) {
+        // Pure JSON on stdout, nothing else — callers (e.g. the PHP wrapper)
+        // json_decode() the whole stream. Empty lines is still success.
+        std::cout << arbo::ocr::toJson(page, engine.backend()) << "\n";
+        return 0;
+    }
+
     std::cout << "Image: " << page.image << "\n";
     // recognize() never throws — missing/unreadable images and inference
     // failures both yield empty lines with elapsedMs still set.
