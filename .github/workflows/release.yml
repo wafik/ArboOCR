@@ -16,6 +16,15 @@ jobs:
         with:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          restore-keys: |
+            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-x64-
+
       - name: Configure
         run: cmake --preset windows-x64
 
@@ -55,6 +64,15 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          restore-keys: |
+            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-linux-x64-
 
       - name: Configure
         run: cmake --preset linux-x64
