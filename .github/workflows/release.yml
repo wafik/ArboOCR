@@ -11,27 +11,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bootstrap vcpkg
-        run: |
-          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-        shell: pwsh
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 
       - name: Configure
         run: cmake --preset windows-x64
-        shell: pwsh
-        env:
-          VCPKG_ROOT: C:\vcpkg
 
-      - name: Build arboocr_demo
-        run: cmake --build build/windows-x64 --config Release --target arboocr_demo
-        shell: pwsh
+      - name: Build
+        run: cmake --build build/windows-x64 --config Release
+
+      - name: Test
+        run: ctest --test-dir build/windows-x64 --config Release --output-on-failure
 
       - name: Package
         run: |
           $out = "package/arboocr-windows-x64"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Copy-Item "build/windows-x64/Release/*.exe" $out
+          Copy-Item "build/windows-x64/Release/arboocr_demo.exe" $out
           Copy-Item "build/windows-x64/Release/*.dll" $out
           Copy-Item "LICENSE" $out
           Copy-Item "THIRD_PARTY_NOTICES.md" $out
@@ -48,21 +46,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bootstrap vcpkg
+      - name: Install system dependencies
         run: |
-          git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg
-          /opt/vcpkg/bootstrap-vcpkg.sh
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config autoconf automake libtool patchelf
 
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 
       - name: Configure
         run: cmake --preset linux-x64
-        env:
-          VCPKG_ROOT: /opt/vcpkg
 
-      - name: Build arboocr_demo
-        run: cmake --build build/linux-x64 --target arboocr_demo
+      - name: Build
+        run: cmake --build build/linux-x64 --config Release -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build/linux-x64 --config Release --output-on-failure
 
       - name: Package
         run: |
