@@ -1,5 +1,4 @@
 name: Build & Test
-
 on:
   push:
     branches: [main, master]
@@ -12,33 +11,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 1. WAJIB: Kosongkan disk (agar build OpenCV tidak gagal karena storage Ubuntu penuh)
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      # 2. PERBAIKAN: Tambahan build-essential, libxi-dev, libxtst-dev agar tidak error
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config gperf autoconf autoconf-archive automake libtool libtool-bin
+          sudo apt-get install -y build-essential ninja-build pkg-config gperf autoconf autoconf-archive automake libtool libtool-bin libxi-dev libxtst-dev
 
+      # 3. OPTIMASI: Setup vcpkg dengan Binary Caching bawaan (lebih baik dari actions/cache)
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
+          vcpkgJsonGlob: '**/vcpkg.json'
 
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
-          restore-keys: |
-            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-linux-x64-
-
+      # 4. Configure & Install Dependencies via vcpkg
       - name: Configure
         run: cmake --preset linux-x64
+        
+      # 5. OPTIMASI: Hapus sampah kompilasi untuk menghemat space sebelum build aplikasi utama Anda
+      - name: Clean vcpkg buildtrees
+        run: rm -rf build/linux-x64/vcpkg_installed/*/buildtrees/* || true
 
       - name: Build
         run: cmake --build build/linux-x64 --config Release -j$(nproc)
 
       - name: Test
         run: ctest --test-dir build/linux-x64 --config Release --output-on-failure
+
 
   build-windows:
     runs-on: windows-2022
@@ -49,18 +59,13 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
-
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
-          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
-          restore-keys: |
-            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-windows-x64-
+          vcpkgJsonGlob: '**/vcpkg.json'
 
       - name: Configure
         run: cmake --preset windows-x64
+        
+      - name: Clean vcpkg buildtrees (Windows)
+        run: Remove-Item -Recurse -Force build\windows-x64\vcpkg_installed\*\buildtrees\* -ErrorAction SilentlyContinue
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
