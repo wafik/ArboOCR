@@ -26,7 +26,28 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ninja-build pkg-config gperf autoconf autoconf-archive automake libtool libtool-bin libxi-dev libxtst-dev
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            gperf \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool \
+            libtool-bin \
+            libxi-dev \
+            libxtst-dev \
+            libxext-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libgles2-mesa-dev \
+            libwayland-dev
 
       # 3. OPTIMASI: Setup vcpkg dengan Binary Caching bawaan (lebih baik dari actions/cache)
       - name: Setup vcpkg
@@ -37,7 +58,7 @@ jobs:
 
       # 4. Configure & Install Dependencies via vcpkg
       - name: Configure
-        run: cmake --preset linux-x64
+        run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
         
       # 5. OPTIMASI: Hapus sampah kompilasi untuk menghemat space sebelum build aplikasi utama Anda
       - name: Clean vcpkg buildtrees
@@ -45,9 +66,9 @@ jobs:
 
       - name: Build
         run: cmake --build build/linux-x64 --config Release -j$(nproc)
-
+        
       - name: Test
-        run: ctest --test-dir build/linux-x64 --config Release --output-on-failure
+        run: ctest --test-dir build/linux-x64 -C Release --output-on-failure
 
 
   build-windows:
@@ -62,13 +83,13 @@ jobs:
           vcpkgJsonGlob: '**/vcpkg.json'
 
       - name: Configure
-        run: cmake --preset windows-x64
+        run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
         
       - name: Clean vcpkg buildtrees (Windows)
         run: Remove-Item -Recurse -Force build\windows-x64\vcpkg_installed\*\buildtrees\* -ErrorAction SilentlyContinue
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
-
+        
       - name: Test
-        run: ctest --test-dir build/windows-x64 --config Release --output-on-failure
+        run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
