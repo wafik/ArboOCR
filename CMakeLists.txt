@@ -60,7 +60,21 @@ if(ARBOOCR_USE_SYSTEM_DEPS)
     set_target_properties(arboOCR PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
 else()
+    # Konfigurasi bawaan yang sudah berjalan baik di Windows via vcpkg
     target_link_libraries(arboOCR PUBLIC onnxruntime::onnxruntime)
+    
+    # Tambahan spesifik untuk Linux agar tidak mengganggu build Windows
+    if(UNIX AND NOT APPLE)
+        # Opsi 1: Jika vcpkg menaruh header di path spesifik yang tidak ter-link otomatis
+        # find_path() akan mencari lokasi onnxruntime_cxx_api.h dan kita menambahkannya secara manual
+        find_path(ONNXRUNTIME_INCLUDE_DIR 
+            NAMES onnxruntime_cxx_api.h 
+            PATH_SUFFIXES onnxruntime/core/session onnxruntime
+        )
+        if(ONNXRUNTIME_INCLUDE_DIR)
+            target_include_directories(arboOCR PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+        endif()
+    endif()
 endif()
 
 # Tests.
