@@ -67,6 +67,7 @@ jobs:
           restore-keys: |
             vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
             vcpkg-linux-x64-
+          save-always: true
 
       # 4. Configure & Install Dependencies via vcpkg
       - name: Configure
@@ -102,6 +103,7 @@ jobs:
           restore-keys: |
             vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
             vcpkg-windows-x64-
+          save-always: true
 
       - name: Configure
         run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
