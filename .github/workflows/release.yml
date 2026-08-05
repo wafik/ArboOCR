@@ -26,7 +26,7 @@ jobs:
             vcpkg-windows-x64-
 
       - name: Configure
-        run: cmake --preset windows-x64
+        run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
@@ -55,10 +55,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config gperf autoconf autoconf-archive automake libtool libtool-bin patchelf
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            gperf \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool \
+            libtool-bin \
+            patchelf \
+            libxi-dev \
+            libxtst-dev \
+            libxext-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libgles2-mesa-dev \
+            libwayland-dev
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -75,7 +107,10 @@ jobs:
             vcpkg-linux-x64-
 
       - name: Configure
-        run: cmake --preset linux-x64
+        run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
+
+      - name: Clean vcpkg buildtrees
+        run: rm -rf build/linux-x64/vcpkg_installed/*/buildtrees/* || true
 
       - name: Build
         run: cmake --build build/linux-x64 --config Release -j$(nproc)
