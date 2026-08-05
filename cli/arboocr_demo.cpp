@@ -33,7 +33,17 @@ int main(int argc, char* argv[]) {
             cxxopts::value<std::string>()->default_value(""))
         ("h,help", "Print usage");
 
-    auto result = opts.parse(argc, argv);
+    cxxopts::ParseResult result;
+    try {
+        result = opts.parse(argc, argv);
+    } catch (const std::exception& e) {
+        // Uncaught, this exception unwinds past main() and hits
+        // std::terminate() — which this toolchain's hardened runtime turns
+        // into an unhelpful STATUS_STACK_BUFFER_OVERRUN crash instead of a
+        // clean error (e.g. any unrecognized flag). Fail cleanly instead.
+        std::cerr << "arboocr_demo: " << e.what() << "\n\n" << opts.help() << std::endl;
+        return 1;
+    }
     if (result.count("help") || !result.count("image")) {
         std::cout << opts.help() << std::endl;
         return result.count("image") ? 0 : 1;
