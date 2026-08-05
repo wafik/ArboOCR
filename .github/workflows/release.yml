@@ -128,9 +128,12 @@ jobs:
           # Bundle every shared lib the binary resolves outside system dirs
           # (vcpkg-built onnxruntime/opencv/curl and their deps), and point
           # the binary at them via a relative RPATH so it's self-contained.
+          # grep exits 1 on zero matches (e.g. everything is statically
+          # linked except system libs) — with pipefail that would abort the
+          # whole step even though "nothing extra to bundle" isn't an error.
           ldd "$bin" | awk '{print $3}' | grep -E '^/' | grep -v -E '^/lib|^/usr/lib' | while read -r lib; do
             cp -L "$lib" "$out/"
-          done
+          done || true
           cp LICENSE THIRD_PARTY_NOTICES.md "$out/"
           patchelf --set-rpath '$ORIGIN' "$out/arboocr_demo" || true
           tar czf arboocr-linux-x64.tar.gz -C package arboocr-linux-x64
