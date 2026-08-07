@@ -55,6 +55,19 @@ int detLimitSideLen = 960;
     // separate trtCacheDir or clearing the cache so engines are rebuilt.
     // INT8 is not supported (needs a calibration dataset).
     bool useFp16 = true;
+    // ONNXRuntime thread-pool sizes, applied to all three sessions
+    // (det/cls/rec). 0 means "let ORT decide", which in practice sizes the
+    // pools for the whole machine. That is right for a process that owns the
+    // box and wrong when it does not: N worker processes on one host each
+    // spawn a machine-sized pool and thrash, and a container's CPU quota is
+    // invisible to ORT. So this is a deployment knob (one worker per core,
+    // cgroup limits), not a performance win — RapidOCR exposes the same pair
+    // and states outright that bigger is not better, since the optimum is
+    // workload-dependent. Measure before changing; ORT's default is usually
+    // right for a process with the machine to itself. Negative values are
+    // clamped to 0.
+    int intraOpNumThreads = 0;  // 0 = ORT default
+    int interOpNumThreads = 0;  // 0 = ORT default
     // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the
     // full image before detection. Off by default (matches
     // useAngleCls/useCuda/useTensorrt) — helps low-contrast documents

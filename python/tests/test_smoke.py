@@ -74,6 +74,17 @@ class TestArboocrSmoke(unittest.TestCase):
         cfg.return_word_boxes = True
         self.assertTrue(cfg.return_word_boxes)
 
+    def test_thread_counts_default_zero_and_settable(self):
+        cfg = EngineConfig()
+        # 0 = let ORT size its own pools; set explicitly when several OCR
+        # workers share one host, so they don't each grab every core.
+        self.assertEqual(cfg.intra_op_num_threads, 0)
+        self.assertEqual(cfg.inter_op_num_threads, 0)
+        cfg.intra_op_num_threads = 4
+        cfg.inter_op_num_threads = 2
+        self.assertEqual(cfg.intra_op_num_threads, 4)
+        self.assertEqual(cfg.inter_op_num_threads, 2)
+
     def test_word_box_fields_and_line_words(self):
         w = WordBox()
         w.text = "hi"

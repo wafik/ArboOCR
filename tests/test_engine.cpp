@@ -25,6 +25,8 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.recBatchNum == 6);
     CHECK(cfg.useAngleCls == false);
     CHECK(cfg.useFp16 == true); // TensorRT FP16 default (was always-on)
+    CHECK(cfg.intraOpNumThreads == 0); // 0 = ORT decides
+    CHECK(cfg.interOpNumThreads == 0); // 0 = ORT decides
     CHECK(cfg.useClahe == false);
     CHECK(cfg.splitOvermerged == false);
     CHECK(cfg.minimumConfidence == doctest::Approx(0.5f));
@@ -40,6 +42,20 @@ TEST_CASE("EngineConfig path overrides default empty") {
     CHECK(cfg.clsModelPath.empty());
     CHECK(cfg.recModelPath.empty());
     CHECK(cfg.dictPath.empty());
+}
+
+TEST_CASE("EngineConfig thread counts are settable and survive a copy") {
+    EngineConfig cfg;
+    cfg.intraOpNumThreads = 2;
+    cfg.interOpNumThreads = 1;
+    CHECK(cfg.intraOpNumThreads == 2);
+    CHECK(cfg.interOpNumThreads == 1);
+
+    // Callers routinely pass the config around by value (Engine stores its
+    // own copy), so the knob has to travel with it.
+    EngineConfig copy = cfg;
+    CHECK(copy.intraOpNumThreads == 2);
+    CHECK(copy.interOpNumThreads == 1);
 }
 
 TEST_CASE("resolveModelPaths uses default flat layout under modelsDir") {

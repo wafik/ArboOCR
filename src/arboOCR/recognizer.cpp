@@ -43,9 +43,11 @@ void Recognizer::setReturnSpans(bool enabled) {
 
 void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
                          bool useTensorrt, const std::string& trtCacheDir,
-                         bool useFp16) {
-    sessionOptions_.SetInterOpNumThreads(0);
-    sessionOptions_.SetIntraOpNumThreads(0);
+                         bool useFp16, int intraOpNumThreads, int interOpNumThreads) {
+    // 0 = ORT sizes its own pools. Clamp negatives: ORT reads these as a
+    // literal thread count, so a stray -1 is not the "auto" it looks like.
+    sessionOptions_.SetInterOpNumThreads(std::max(0, interOpNumThreads));
+    sessionOptions_.SetIntraOpNumThreads(std::max(0, intraOpNumThreads));
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
     // ORT's CPU arena is on by default and never returns memory to the OS:

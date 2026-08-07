@@ -105,11 +105,14 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     recognizer_.setRecBatchNum(config.recBatchNum);
     recognizer_.setReturnSpans(config.returnWordBoxes);
 
-    detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+    detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+        config.intraOpNumThreads, config.interOpNumThreads);
     if (config.useAngleCls) {
-        classifier_.loadModel(paths.cls, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+        classifier_.loadModel(paths.cls, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+            config.intraOpNumThreads, config.interOpNumThreads);
     }
-    recognizer_.loadModel(paths.rec, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+    recognizer_.loadModel(paths.rec, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+        config.intraOpNumThreads, config.interOpNumThreads);
 
     if (!recognizer_.loadKeysFromModelMetadata()) {
         log(LogLevel::Debug, "Recognizer keys: model metadata missing, loading " + paths.dict);

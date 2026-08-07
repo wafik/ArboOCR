@@ -147,6 +147,8 @@ PYBIND11_MODULE(_arboocr, m) {
         .def_readwrite("use_cuda", &EngineConfig::useCuda)
         .def_readwrite("use_tensorrt", &EngineConfig::useTensorrt)
         .def_readwrite("use_fp16", &EngineConfig::useFp16)
+        .def_readwrite("intra_op_num_threads", &EngineConfig::intraOpNumThreads)
+        .def_readwrite("inter_op_num_threads", &EngineConfig::interOpNumThreads)
         .def_readwrite("use_clahe", &EngineConfig::useClahe)
         .def_readwrite("split_overmerged", &EngineConfig::splitOvermerged)
         .def_readwrite("minimum_confidence", &EngineConfig::minimumConfidence)

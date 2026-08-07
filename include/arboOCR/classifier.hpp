@@ -21,9 +21,13 @@ public:
     Classifier(const Classifier&) = delete;
     Classifier& operator=(const Classifier&) = delete;
 
+    /// `intraOpNumThreads`/`interOpNumThreads` size the ORT thread pools;
+    /// 0 (the default) leaves the choice to ORT. See EngineConfig for when
+    /// setting them is worth it. Negative values are clamped to 0.
     void loadModel(const std::string& modelPath, bool useCuda = false,
                    bool useTensorrt = false, const std::string& trtCacheDir = "",
-                   bool useFp16 = true);
+                   bool useFp16 = true, int intraOpNumThreads = 0,
+                   int interOpNumThreads = 0);
 
     /// Classify each cropped text-line image's orientation (0 = upright,
     /// 1 = 180-degree rotated). If `doAngle` is false, returns index=-1 for

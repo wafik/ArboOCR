@@ -1,8 +1,11 @@
-// cli/arboocr_demo.cpp — minimal arboOCR quickstart: recognize one image.
+// cli/arboocr_demo.cpp — minimal arboOCR quickstart: recognize one image, or a
+// whole list of them against a single loaded Engine (--images-from).
 #include <fstream>
 #include <iostream>
+#include <istream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <cxxopts.hpp>
 
@@ -13,11 +16,46 @@
 #include "arboOCR/markdown.hpp"
 #include "arboOCR/visualize.hpp"
 
+namespace {
+
+// Appended to --help: wrappers drive this binary over subprocess and branch on
+// the exit code, so the batch rule has to be written down somewhere they read.
+constexpr const char* kExitCodesHelp =
+    "Exit codes:\n"
+    "  0  success — every image produced at least one text line\n"
+    "  1  usage error, or no text found (single image: the one image was empty;\n"
+    "     --images-from: at least one image was empty — a partial batch)\n"
+    "  2  nothing usable ran — model load failed, recognition threw, or the\n"
+    "     --images-from list could not be opened\n";
+
+// A file of paths (one per line) rather than a directory glob or a repeatable
+// --image: no glob library and no recursion policy to decide, it composes with
+// find/ls/Get-ChildItem, and it has no command-line length ceiling (Windows
+// caps argv near 32k, which a repeatable flag would hit around 200 paths).
+// The caller decides what the set is.
+std::vector<std::string> readImageList(std::istream& in) {
+    std::vector<std::string> paths;
+    std::string line;
+    while (std::getline(in, line)) {
+        // Trailing \r so a CRLF list written on Windows works anywhere.
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        paths.push_back(line);
+    }
+    return paths;
+}
+
+} // namespace
+
 int main(int argc, char* argv[]) {
     // Library default is silent (no callback). --log-level opts in below.
-    cxxopts::Options opts("arboocr_demo", "Recognize text in one image with arboOCR");
+    cxxopts::Options opts("arboocr_demo", "Recognize text in one or many images with arboOCR");
     opts.add_options()
         ("image", "Path to input image", cxxopts::value<std::string>())
+        ("images-from", "Read image paths from this file, one per line (\"-\" reads stdin); blank"
+                        " lines and lines starting with # are skipped. All of them share one"
+                        " loaded Engine. Mutually exclusive with --image",
+            cxxopts::value<std::string>())
         ("models-dir", "Directory containing ONNX models", cxxopts::value<std::string>()->default_value("models"))
         ("ocr-version", "OCR model version", cxxopts::value<std::string>()->default_value("PP-OCRv6"))
         ("model-type", "Recognizer size — tiny/small/medium (default small; detector is always the same file unless --det-model)",
@@ -75,9 +113,28 @@ int main(int argc, char* argv[]) {
         std::cerr << "arboocr_demo: " << e.what() << "\n\n" << opts.help() << std::endl;
         return 1;
     }
-    if (result.count("help") || !result.count("image")) {
-        std::cout << opts.help() << std::endl;
-        return result.count("image") ? 0 : 1;
+    const bool batchMode = result.count("images-from") > 0;
+    if (result.count("help") || (!result.count("image") && !batchMode)) {
+        std::cout << opts.help() << "\n" << kExitCodesHelp << std::endl;
+        return (result.count("image") || batchMode) ? 0 : 1;
+    }
+    if (result.count("image") && batchMode) {
+        std::cerr << "arboocr_demo: --image and --images-from are mutually exclusive"
+                     " (pass one image, or a list of them — not both)" << std::endl;
+        return 1;
+    }
+    // ponytail: --draw and --markdown each take a single output path, so N images
+    // would write N times over one file. Refusing beats silently keeping only the
+    // last page. Upgrade path if anyone actually needs it: an output-directory flag.
+    if (batchMode && result.count("draw")) {
+        std::cerr << "arboocr_demo: --draw cannot be combined with --images-from"
+                     " (single output path for many images)" << std::endl;
+        return 1;
+    }
+    if (batchMode && result.count("markdown")) {
+        std::cerr << "arboocr_demo: --markdown cannot be combined with --images-from"
+                     " (single output path for many images)" << std::endl;
+        return 1;
     }
 
     // Opt-in logging: without --log-level the library stays silent (no callback).
@@ -128,6 +185,29 @@ int main(int argc, char* argv[]) {
 
     const bool jsonMode = result["json"].as<bool>();
 
+    // Resolve the work list before the models load, so a typo'd list path costs
+    // nothing. See readImageList() for why the batch is a file of paths.
+    std::vector<std::string> images;
+    if (batchMode) {
+        const std::string listPath = result["images-from"].as<std::string>();
+        if (listPath == "-") {
+            images = readImageList(std::cin);
+        } else {
+            std::ifstream list(listPath, std::ios::binary);
+            if (!list) {
+                std::cerr << "arboocr_demo: --images-from: cannot open " << listPath << std::endl;
+                return 2;
+            }
+            images = readImageList(list);
+        }
+        if (images.empty()) {
+            std::cerr << "arboocr_demo: --images-from: no image paths in " << listPath << std::endl;
+            return 1;
+        }
+    } else {
+        images.push_back(result["image"].as<std::string>());
+    }
+
     // Engine construction loads the ONNX sessions and throws Ort::Exception on
     // a missing/corrupt model. Uncaught, that unwinds past main() the same way
     // a cxxopts parse error would — report the resolved paths and bail cleanly.
@@ -151,84 +231,120 @@ int main(int argc, char* argv[]) {
         std::cout << "Backend: " << engine->backend() << "\n";
     }
 
-    // recognize() is documented as never throwing; guard anyway so an
-    // unexpected inference failure is a diagnostic, not a terminate().
-    arbo::ocr::PagePrediction page;
-    try {
-        page = engine->recognize(result["image"].as<std::string>());
-    } catch (const std::exception& e) {
-        std::cerr << "arboocr_demo: recognition failed: " << e.what() << std::endl;
-        return 2;
-    }
+    // One Engine, N images. The model load dominates a single page, so amortizing
+    // it across the list is the entire point of --images-from; the loop itself is
+    // deliberately serial (the Engine already batches crops internally).
+    bool anyEmpty = false;
+    if (jsonMode && batchMode) std::cout << "[";
 
-    // Before the jsonMode early-return, so --draw composes with --json.
-    // Diagnostics go to stderr to keep stdout pure JSON in that mode.
-    if (result.count("draw")) {
-        const auto& outPath = result["draw"].as<std::string>();
-        cv::Mat src = cv::imread(result["image"].as<std::string>(), cv::IMREAD_COLOR);
-        if (src.empty()) {
-            std::cerr << "arboocr_demo: --draw: cannot re-read image for overlay\n";
-        } else if (!cv::imwrite(outPath, arbo::ocr::drawResult(src, page))) {
-            std::cerr << "arboocr_demo: --draw: failed to write " << outPath << "\n";
-        } else if (!jsonMode) {
-            std::cout << "Overlay: " << outPath << "\n";
+    for (size_t imageIdx = 0; imageIdx < images.size(); imageIdx++) {
+        const std::string& imagePath = images[imageIdx];
+
+        // recognize() is documented as never throwing; guard anyway so an
+        // unexpected inference failure is a diagnostic, not a terminate().
+        arbo::ocr::PagePrediction page;
+        try {
+            page = engine->recognize(imagePath);
+        } catch (const std::exception& e) {
+            std::cerr << "arboocr_demo: recognition failed: " << e.what() << std::endl;
+            return 2;
         }
-    }
 
-    // Same placement as --draw, for the same reason: composes with --json, and
-    // a write failure is a warning because the recognition itself succeeded.
-    if (result.count("markdown")) {
-        const auto& outPath = result["markdown"].as<std::string>();
-        std::ofstream out(outPath, std::ios::binary);
-        if (!out) {
-            std::cerr << "arboocr_demo: --markdown: cannot open " << outPath << "\n";
-        } else {
-            out << arbo::ocr::toMarkdown(page);
-            out.close();
-            if (!out) {
-                std::cerr << "arboocr_demo: --markdown: failed to write " << outPath << "\n";
+        // Before the jsonMode early-return, so --draw composes with --json.
+        // Diagnostics go to stderr to keep stdout pure JSON in that mode.
+        // Single-image only — batch rejected the combination during parsing.
+        if (result.count("draw")) {
+            const auto& outPath = result["draw"].as<std::string>();
+            cv::Mat src = cv::imread(imagePath, cv::IMREAD_COLOR);
+            if (src.empty()) {
+                std::cerr << "arboocr_demo: --draw: cannot re-read image for overlay\n";
+            } else if (!cv::imwrite(outPath, arbo::ocr::drawResult(src, page))) {
+                std::cerr << "arboocr_demo: --draw: failed to write " << outPath << "\n";
             } else if (!jsonMode) {
-                std::cout << "Markdown: " << outPath << "\n";
+                std::cout << "Overlay: " << outPath << "\n";
             }
         }
-    }
 
-    if (jsonMode) {
-        // --markdown turns word boxes on internally, but the JSON payload is a
-        // published contract: "words" appears iff the caller asked for it. Drop
-        // them again so --markdown can't silently reshape a wrapper's output.
-        if (!result["word-boxes"].as<bool>()) {
-            for (auto& line : page.lines) line.words.clear();
-        }
-        // Pure JSON on stdout, nothing else — callers (e.g. the PHP wrapper)
-        // json_decode() the whole stream. Empty lines is still success.
-        std::cout << arbo::ocr::toJson(page, engine->backend()) << "\n";
-        return 0;
-    }
-
-    std::cout << "Image: " << page.image << "\n";
-    // recognize() never throws — missing/unreadable images and inference
-    // failures both yield empty lines with elapsedMs still set.
-    if (page.lines.empty()) {
-        std::cerr << "No text found (missing image, unsupported format, or empty page)"
-                  << " (" << page.elapsedMs << " ms)\n";
-        return 1;
-    }
-    std::cout << "Lines: " << page.lines.size() << " (" << page.elapsedMs << " ms)\n";
-    for (size_t i = 0; i < page.lines.size(); i++) {
-        const auto& line = page.lines[i];
-        std::cout << "  [" << i << "] \"" << line.text
-                  << "\" (score=" << line.score
-                  << " detScore=" << line.detScore << ")";
-        if (!line.polygon.empty()) {
-            std::cout << " poly=[";
-            for (size_t p = 0; p < line.polygon.size(); p++) {
-                if (p) std::cout << ", ";
-                std::cout << "(" << line.polygon[p].x << "," << line.polygon[p].y << ")";
+        // Same placement as --draw, for the same reason: composes with --json, and
+        // a write failure is a warning because the recognition itself succeeded.
+        if (result.count("markdown")) {
+            const auto& outPath = result["markdown"].as<std::string>();
+            std::ofstream out(outPath, std::ios::binary);
+            if (!out) {
+                std::cerr << "arboocr_demo: --markdown: cannot open " << outPath << "\n";
+            } else {
+                out << arbo::ocr::toMarkdown(page);
+                out.close();
+                if (!out) {
+                    std::cerr << "arboocr_demo: --markdown: failed to write " << outPath << "\n";
+                } else if (!jsonMode) {
+                    std::cout << "Markdown: " << outPath << "\n";
+                }
             }
-            std::cout << "]";
         }
-        std::cout << "\n";
+
+        if (jsonMode) {
+            // --markdown turns word boxes on internally, but the JSON payload is a
+            // published contract: "words" appears iff the caller asked for it. Drop
+            // them again so --markdown can't silently reshape a wrapper's output.
+            if (!result["word-boxes"].as<bool>()) {
+                for (auto& line : page.lines) line.words.clear();
+            }
+            // Pure JSON on stdout, nothing else — callers (e.g. the PHP wrapper)
+            // json_decode() the whole stream. Empty lines is still success.
+            if (!batchMode) {
+                std::cout << arbo::ocr::toJson(page, engine->backend()) << "\n";
+                return 0;
+            }
+            // Batch emits the very same page objects inside a JSON array, so a
+            // wrapper json_decode()s the whole stream exactly as it does today.
+            // Assembled here with plain brackets rather than a new types.cpp
+            // overload, to leave the single-image bare-object shape untouched.
+            if (imageIdx) std::cout << ",";
+            std::cout << arbo::ocr::toJson(page, engine->backend());
+            if (page.lines.empty()) {
+                anyEmpty = true;
+                std::cerr << "arboocr_demo: no text found in " << imagePath << "\n";
+            }
+            continue;
+        }
+
+        std::cout << "Image: " << page.image << "\n";
+        // recognize() never throws — missing/unreadable images and inference
+        // failures both yield empty lines with elapsedMs still set. In batch that
+        // is one bad page, not a dead run: report it and keep going.
+        if (page.lines.empty()) {
+            std::cerr << "No text found (missing image, unsupported format, or empty page)"
+                      << (batchMode ? ": " + imagePath : std::string())
+                      << " (" << page.elapsedMs << " ms)\n";
+            if (!batchMode) return 1;
+            anyEmpty = true;
+            std::cout << "\n";
+            continue;
+        }
+        std::cout << "Lines: " << page.lines.size() << " (" << page.elapsedMs << " ms)\n";
+        for (size_t i = 0; i < page.lines.size(); i++) {
+            const auto& line = page.lines[i];
+            std::cout << "  [" << i << "] \"" << line.text
+                      << "\" (score=" << line.score
+                      << " detScore=" << line.detScore << ")";
+            if (!line.polygon.empty()) {
+                std::cout << " poly=[";
+                for (size_t p = 0; p < line.polygon.size(); p++) {
+                    if (p) std::cout << ", ";
+                    std::cout << "(" << line.polygon[p].x << "," << line.polygon[p].y << ")";
+                }
+                std::cout << "]";
+            }
+            std::cout << "\n";
+        }
+        // Blank line between pages keeps the batch scannable; single-image output
+        // stays byte-identical to what wrappers already scrape.
+        if (batchMode) std::cout << "\n";
     }
-    return 0;
+
+    if (jsonMode && batchMode) std::cout << "]\n";
+    // 0 = every image had text, 1 = at least one came back empty (partial batch).
+    // Single-image paths already returned above, so this only decides the batch.
+    return anyEmpty ? 1 : 0;
 }
