@@ -70,6 +70,11 @@ void Detector::loadModel(const std::string& modelPath, bool useCuda,
     sessionOptions_.SetIntraOpNumThreads(0);
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+    // ORT's CPU arena is on by default and never returns memory to the OS:
+    // RapidOCR measured ~5.6 GB RSS with it on vs ~82 MB off, buying only
+    // ~13% latency — the wrong trade on Jetson-class edge devices.
+    sessionOptions_.DisableCpuMemArena();
+
     // Fixed profile range covers detLimitSideLen (default 1536) and larger
     // inputs without triggering an ORT TRT rebuild per image shape (see
     // TENSORRT_ENGINE_PORT_PLAN.md Opsi 1).

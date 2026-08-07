@@ -22,8 +22,10 @@ inline T clampValue(T x, T minVal, T maxVal) {
 }
 
 /// Compute the (srcWidth/Height, dstWidth/Height, ratios) for resizing `src`
-/// so its longer side approaches `targetSize`, rounded down to a multiple
-/// of 32 (DBNet's stride requirement).
+/// so its longer side is at most `targetSize`, rounded down to a multiple
+/// of 32 (DBNet's stride requirement). `targetSize` is a ceiling, not a
+/// target: images already smaller are never upscaled (RapidOCR's
+/// `Det.limit_type = max`). Dimensions still floor at 32 for DBNet's stride.
 ScaleParam getScaleParam(const cv::Mat& src, int targetSize);
 
 /// Order a RotatedRect's 4 corners into DBNet's expected
@@ -67,6 +69,9 @@ std::vector<RawTextBox> expandOvermergedBoxes(const std::vector<RawTextBox>& box
                                              const cv::Mat& src);
 
 /// Stable reading order: top-to-bottom then left-to-right by polygon centroid.
+/// Lines are grouped into rows with a tolerance derived from the median
+/// polygon height (half a line), so the ordering is the same whatever
+/// resolution the page was scanned at.
 void sortLinesReadingOrder(std::vector<LinePrediction>& lines);
 
 /// CTC post: insert spaces where horizontal gaps between emitted tokens look

@@ -25,6 +25,14 @@ ScaleParam getScaleParam(const cv::Mat& src, int targetSize) {
     float ratio = (srcWidth > srcHeight)
         ? static_cast<float>(targetSize) / static_cast<float>(srcWidth)
         : static_cast<float>(targetSize) / static_cast<float>(srcHeight);
+    // RapidOCR's `Det.limit_type = max` semantic: targetSize is a CEILING on
+    // the long side, never a target to grow to. Upscaling a small image is
+    // pure waste — the detector pays full O(w*h) cost on interpolated pixels
+    // that carry no extra text detail — and arboOCR's default
+    // detLimitSideLen=960 was measured as a ceiling on receipts (1536
+    // over-merged, 960 recovered ~2 points), so growing past the source
+    // resolution runs the model outside the range it was tuned on.
+    ratio = std::min(ratio, 1.0f);
 
     dstWidth = static_cast<int>(static_cast<float>(srcWidth) * ratio);
     dstHeight = static_cast<int>(static_cast<float>(srcHeight) * ratio);
@@ -377,11 +385,38 @@ void sortLinesReadingOrder(std::vector<LinePrediction>& lines) {
         const float n = static_cast<float>(poly.size());
         return std::pair<float, float>{x / n, y / n};
     };
+    // Same visual row if y within ~half a typical line. A fixed pixel tolerance
+    // is resolution-dependent — 12px is about half a line on a phone photo, a
+    // small fraction of one on a 300 DPI scan (rows fragment into single
+    // fields) and more than a whole line on a thumbnail (rows merge) — so
+    // derive it from the median polygon height instead. Half a median line
+    // height is the widest margin available on both sides: within a row,
+    // neighbouring fields jitter by well under half a line, while the next row
+    // sits at least a full line away. Scale-invariant by construction: the
+    // same page at 1x and 4x yields the same ordering.
+    constexpr float kRowTolFraction = 0.5f;
+    constexpr float kMinRowTol = 2.f; // floor for degenerate (zero-height) polygons
+    float yTol = kMinRowTol;
+    std::vector<float> heights;
+    heights.reserve(lines.size());
+    for (const auto& line : lines) {
+        if (line.polygon.empty()) continue;
+        float minY = line.polygon.front().y;
+        float maxY = minY;
+        for (const auto& pt : line.polygon) {
+            minY = std::min(minY, pt.y);
+            maxY = std::max(maxY, pt.y);
+        }
+        heights.push_back(maxY - minY);
+    }
+    if (!heights.empty()) {
+        std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+        yTol = std::max(kMinRowTol, kRowTolFraction * heights[heights.size() / 2]);
+    }
+
     std::stable_sort(lines.begin(), lines.end(), [&](const LinePrediction& a, const LinePrediction& b) {
         auto ca = centroid(a.polygon);
         auto cb = centroid(b.polygon);
-        // Same visual row if y within ~half a typical line — use 12px fallback.
-        const float yTol = 12.f;
         if (std::fabs(ca.second - cb.second) > yTol) {
             return ca.second < cb.second;
         }

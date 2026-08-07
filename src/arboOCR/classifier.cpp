@@ -37,6 +37,11 @@ void Classifier::loadModel(const std::string& modelPath, bool useCuda,
     sessionOptions_.SetIntraOpNumThreads(0);
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+    // ORT's CPU arena is on by default and never returns memory to the OS:
+    // RapidOCR measured ~5.6 GB RSS with it on vs ~82 MB off, buying only
+    // ~13% latency — the wrong trade on Jetson-class edge devices.
+    sessionOptions_.DisableCpuMemArena();
+
     // Input is always resized to kDstWidth x kDstHeight (192x48) before
     // inference, so min=opt=max — one shape, ever.
     detail::configureExecutionProviders(sessionOptions_, useCuda, useTensorrt, trtCacheDir,

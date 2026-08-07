@@ -1,19 +1,48 @@
+#include <algorithm>
+
 #include <doctest/doctest.h>
 #include <opencv2/opencv.hpp>
 #include "arboOCR/ocr_utils.hpp"
 
 using namespace arbo::ocr;
 
-TEST_CASE("getScaleParam scales to target size, rounds to multiple of 32") {
+TEST_CASE("getScaleParam rounds dims down to a multiple of 32") {
     cv::Mat img(400, 600, CV_8UC3); // 600 wide x 400 tall
     ScaleParam s = getScaleParam(img, 736);
     CHECK(s.srcWidth == 600);
     CHECK(s.srcHeight == 400);
-    // Wider side (600) scales toward 736; dstWidth should be a multiple of 32
+    // 600 is already under the 736 ceiling, so both dims only floor to /32.
     CHECK(s.dstWidth % 32 == 0);
     CHECK(s.dstHeight % 32 == 0);
     CHECK(s.dstWidth > 0);
     CHECK(s.dstHeight > 0);
+}
+
+TEST_CASE("getScaleParam never upscales a small image (targetSize is a ceiling)") {
+    cv::Mat thumb(150, 200, CV_8UC3); // 200 wide x 150 tall, far under the limit
+    ScaleParam s = getScaleParam(thumb, 960);
+    CHECK(s.srcWidth == 200);
+    CHECK(s.srcHeight == 150);
+    // Old behaviour scaled the long side up to 960 and paid detector cost on
+    // interpolated pixels; the ceiling semantic only floors to /32.
+    CHECK(s.dstWidth == 192);
+    CHECK(s.dstHeight == 128);
+    CHECK(s.dstWidth <= s.srcWidth);
+    CHECK(s.dstHeight <= s.srcHeight);
+    CHECK(s.ratioWidth <= 1.0f);
+    CHECK(s.ratioHeight <= 1.0f);
+}
+
+TEST_CASE("getScaleParam still downscales a large image to the ceiling") {
+    cv::Mat page(1080, 1920, CV_8UC3); // 1920 wide x 1080 tall
+    ScaleParam s = getScaleParam(page, 960);
+    CHECK(s.srcWidth == 1920);
+    CHECK(s.srcHeight == 1080);
+    CHECK(s.dstWidth == 960);  // long side exactly at the ceiling
+    CHECK(s.dstHeight == 512); // 540 floored to a multiple of 32
+    CHECK(s.dstWidth % 32 == 0);
+    CHECK(s.dstHeight % 32 == 0);
+    CHECK(std::max(s.dstWidth, s.dstHeight) <= 960);
 }
 
 TEST_CASE("getMinBoxes returns 4 ordered points and correct maxSideLen") {
@@ -117,6 +146,71 @@ TEST_CASE("sortLinesReadingOrder sorts by y then x") {
     CHECK(lines[0].text == "left-top");
     CHECK(lines[1].text == "right-top");
     CHECK(lines[2].text == "bottom");
+}
+
+TEST_CASE("sortLinesReadingOrder gives the same order at 1x and 4x coordinates") {
+    // Same logical page at two resolutions. The top row's two columns sit 4px
+    // apart in y at 1x — 16px at 4x, which is past the old hard-coded 12px
+    // tolerance, so the high-DPI copy used to fragment that row and emit the
+    // right-hand column first. With a tolerance derived from median line
+    // height the ordering is identical at both scales.
+    auto buildPage = [](float k) {
+        auto rect = [k](float x0, float y0, float x1, float y1, const char* text) {
+            LinePrediction line;
+            line.polygon = {{x0 * k, y0 * k}, {x1 * k, y0 * k}, {x1 * k, y1 * k}, {x0 * k, y1 * k}};
+            line.text = text;
+            return line;
+        };
+        // Deliberately shuffled input order.
+        return std::vector<LinePrediction>{
+            rect(100, 6, 140, 20, "row0-right"),
+            rect(10, 70, 50, 84, "row2-left"),
+            rect(10, 10, 50, 24, "row0-left"),
+            rect(100, 41, 140, 55, "row1-right"),
+            rect(10, 40, 50, 54, "row1-left"),
+        };
+    };
+    const std::vector<std::string> expected = {
+        "row0-left", "row0-right", "row1-left", "row1-right", "row2-left"};
+
+    for (float k : {1.0f, 4.0f}) {
+        CAPTURE(k);
+        std::vector<LinePrediction> lines = buildPage(k);
+        sortLinesReadingOrder(lines);
+        REQUIRE(lines.size() == expected.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+            CHECK(lines[i].text == expected[i]);
+        }
+    }
+}
+
+TEST_CASE("sortLinesReadingOrder handles empty, single and zero-height input") {
+    std::vector<LinePrediction> none;
+    CHECK_NOTHROW(sortLinesReadingOrder(none));
+    CHECK(none.empty());
+
+    LinePrediction only;
+    only.polygon = {{10, 10}, {50, 10}, {50, 24}, {10, 24}};
+    only.text = "solo";
+    std::vector<LinePrediction> one = {only};
+    CHECK_NOTHROW(sortLinesReadingOrder(one));
+    REQUIRE(one.size() == 1);
+    CHECK(one[0].text == "solo");
+
+    // Degenerate: zero-height polygons (median height 0 -> tolerance floor)
+    // plus an empty polygon (centroid 0,0). Must still order top-to-bottom.
+    LinePrediction flatLow, flatHigh, noPoly;
+    flatLow.polygon = {{10, 60}, {50, 60}, {50, 60}, {10, 60}};
+    flatLow.text = "low";
+    flatHigh.polygon = {{10, 20}, {50, 20}, {50, 20}, {10, 20}};
+    flatHigh.text = "high";
+    noPoly.text = "no-polygon";
+    std::vector<LinePrediction> degenerate = {flatLow, noPoly, flatHigh};
+    CHECK_NOTHROW(sortLinesReadingOrder(degenerate));
+    REQUIRE(degenerate.size() == 3);
+    CHECK(degenerate[0].text == "no-polygon");
+    CHECK(degenerate[1].text == "high");
+    CHECK(degenerate[2].text == "low");
 }
 
 TEST_CASE("injectGapSpaces inserts space on wide cross-class gap") {
