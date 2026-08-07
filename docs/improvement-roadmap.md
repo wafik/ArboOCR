@@ -26,7 +26,7 @@ date above. This document is a checklist, not a promise of ordering.
 | 11 | Tunable intra/inter-op thread counts | Low — workload-dependent | S | open |
 | 12 | CMake `install()` / package export | Medium — contradicts the README pitch | M | **done** (`37107b3`) |
 | 13 | `sortLinesReadingOrder` hard-codes a 12px y-tolerance | Medium — breaks on high-DPI scans | S | **done** (`8c01bcb`) |
-| 14 | No test covers the TensorRT path or the FP16 flag | Medium — unvalidated default | M | open |
+| 14 | No test covers the TensorRT path or the FP16 flag | Medium — unvalidated default | M | open — harness ready (`scripts/fp16_ab.py`), needs GPU |
 
 Effort: **S** = under a day, **M** = a few days, **L** = a week or more.
 
@@ -343,6 +343,43 @@ On a Jetson Nano — where the existing verification run already describes the
 first TensorRT run as "slow, minutes" (`docs/jetson-verification.md:36-37`) — a
 2-3x multiplier on cold-start engine build is a real cost that FP16 must earn
 back.
+
+### Harness: `scripts/fp16_ab.py`
+
+The A/B is written and self-tested, but **has not been run against real
+TensorRT** — no NVIDIA GPU is available on the development machine (the vcpkg
+onnxruntime build ships CPU only: no `onnxruntime_providers_tensorrt.dll`), and
+the Jetson is currently unreachable through its cloudflared tunnel
+(`websocket: bad handshake`). Item #14 stays **open** until someone runs this on
+the Nano.
+
+It needs no ground-truth labels. CPU is the well-tested path, so it asks the
+question the default actually rides on: *does TensorRT agree with CPU, and does
+FP16 agree less than FP32?* Each arm gets its own `--trt-cache-dir`, because
+mixing them loads an engine built for the other precision and makes the whole
+comparison meaningless.
+
+```bash
+python scripts/fp16_ab.py --images path/to/receipts --models-dir models \
+    --bin build/jetson/arboocr_demo --model-type small
+```
+
+Exit codes: `0` pass, `1` FP16 diverged past `--fail-under` (default 0.98),
+`2` inconclusive.
+
+Note what `2` is for. `Engine` auto-falls back TensorRT → CUDA → CPU, so on a
+machine without TensorRT every arm runs identical CPU code and agrees with
+itself 100% — a confident-looking PASS that proves nothing. The script reads
+`backend` out of the demo's JSON and refuses to grade unless the `trt-*` arms
+actually got `tensorrt`. That guard is the only reason its output can be
+trusted; the first version of this script did not have it and printed exactly
+that false PASS.
+
+The existing evidence covers less than it appears to:
+`docs/jetson-verification.md:31-36` reports CPU and TensorRT producing identical
+text, but that was **tiny** models on **one** receipt, and the library default is
+`small`. Run the harness at `--model-type small` and `medium` before treating
+`useFp16 = true` as validated.
 
 **Fix.** One A/B on the SROIE smoke set: `--tensorrt --fp16` vs
 `--tensorrt --fp16=false`, comparing per-line text and full-page similarity. If
