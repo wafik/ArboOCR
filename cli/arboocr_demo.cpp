@@ -5,8 +5,11 @@
 
 #include <cxxopts.hpp>
 
+#include <opencv2/imgcodecs.hpp>
+
 #include "arboOCR/engine.hpp"
 #include "arboOCR/logging.hpp"
+#include "arboOCR/visualize.hpp"
 
 int main(int argc, char* argv[]) {
     // Library default is silent (no callback). --log-level opts in below.
@@ -45,6 +48,8 @@ int main(int argc, char* argv[]) {
         ("json", "Print machine-readable JSON (only JSON on stdout; suppresses the human-readable lines)",
             cxxopts::value<bool>()->default_value("false"))
         ("log-level", "Log engine events to stderr at this level — debug|info|warn|error (default: silent)",
+            cxxopts::value<std::string>())
+        ("draw", "Write a copy of the image with detected boxes outlined to this path",
             cxxopts::value<std::string>())
         ("det-model", "Override detector ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("cls-model", "Override classifier ONNX path", cxxopts::value<std::string>()->default_value(""))
@@ -145,6 +150,20 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "arboocr_demo: recognition failed: " << e.what() << std::endl;
         return 2;
+    }
+
+    // Before the jsonMode early-return, so --draw composes with --json.
+    // Diagnostics go to stderr to keep stdout pure JSON in that mode.
+    if (result.count("draw")) {
+        const auto& outPath = result["draw"].as<std::string>();
+        cv::Mat src = cv::imread(result["image"].as<std::string>(), cv::IMREAD_COLOR);
+        if (src.empty()) {
+            std::cerr << "arboocr_demo: --draw: cannot re-read image for overlay\n";
+        } else if (!cv::imwrite(outPath, arbo::ocr::drawResult(src, page))) {
+            std::cerr << "arboocr_demo: --draw: failed to write " << outPath << "\n";
+        } else if (!jsonMode) {
+            std::cout << "Overlay: " << outPath << "\n";
+        }
     }
 
     if (jsonMode) {

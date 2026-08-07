@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/imgcodecs.hpp>
@@ -48,6 +49,27 @@ Polygon cvPointsToPolygon(const std::vector<cv::Point>& box) {
 }
 
 } // namespace
+
+cv::Mat decodeImageBytes(const uint8_t* data, size_t size) {
+    // cv::imdecode CV_Asserts (throws) on an empty buffer instead of returning
+    // an empty Mat, and the Mat header below takes an int column count — so
+    // null/empty/oversized inputs are screened here rather than by imdecode.
+    if (data == nullptr || size == 0
+        || size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return cv::Mat();
+    }
+    try {
+        // Non-owning 1xN byte view over the caller's buffer: no copy, and
+        // imdecode only reads it. const_cast is safe for the same reason.
+        const cv::Mat buf(1, static_cast<int>(size), CV_8UC1,
+                          const_cast<uint8_t*>(data));
+        return cv::imdecode(buf, cv::IMREAD_COLOR);
+    } catch (const std::exception&) {
+        // Truncated/malformed payloads can throw out of a codec rather than
+        // returning empty. Same degradation either way.
+        return cv::Mat();
+    }
+}
 
 ModelPaths resolveModelPaths(const EngineConfig& cfg) {
     fs::path modelsDir(cfg.modelsDir);
@@ -176,6 +198,15 @@ PagePrediction Engine::recognize(const cv::Mat& image) {
     return runPipeline(image, {});
 }
 
+PagePrediction Engine::recognizeEncoded(const uint8_t* data, size_t size) {
+    cv::Mat src = decodeImageBytes(data, size);
+    if (src.empty()) {
+        log(LogLevel::Warn, "recognize: failed to decode "
+            + std::to_string(size) + " encoded bytes");
+    }
+    return runPipeline(src, {});
+}
+
 std::future<PagePrediction> Engine::recognizeAsync(const std::string& imagePath) {
     return std::async(std::launch::async, [this, imagePath]() {
         return recognize(imagePath);
@@ -186,6 +217,20 @@ std::future<PagePrediction> Engine::recognizeAsync(const cv::Mat& image) {
     cv::Mat copy = image.clone();
     return std::async(std::launch::async, [this, copy = std::move(copy)]() {
         return recognize(copy);
+    });
+}
+
+std::future<PagePrediction> Engine::recognizeEncodedAsync(const uint8_t* data, size_t size) {
+    // Copy rather than capture the pointer: a raw pointer outliving its buffer
+    // is the classic async footgun, and encoded bytes are smaller than the mat
+    // the sync path decodes anyway — the Mat overload already clones for this
+    // exact reason. Guarded so a null pointer never forms an invalid range.
+    std::vector<uint8_t> buf;
+    if (data != nullptr && size > 0) {
+        buf.assign(data, data + size);
+    }
+    return std::async(std::launch::async, [this, buf = std::move(buf)]() {
+        return recognizeEncoded(buf.data(), buf.size());
     });
 }
 
