@@ -9,6 +9,7 @@
 #include <opencv2/core.hpp>
 
 #include "arboOCR/engine.hpp"
+#include "arboOCR/markdown.hpp"
 #include "arboOCR/types.hpp"
 
 namespace py = pybind11;
@@ -176,6 +177,13 @@ PYBIND11_MODULE(_arboocr, m) {
     m.def("to_json",
           [](const LinePrediction& line, bool pretty) { return toJson(line, pretty); },
           py::arg("line"), py::arg("pretty") = false);
+
+    m.def("to_markdown",
+          [](const PagePrediction& page) { return toMarkdown(page); },
+          py::arg("page"),
+          "Reconstruct a rough markdown document from a recognized page.\n"
+          "Structure is inferred from line geometry: paragraphs, headings,\n"
+          "list items, and `key | value` table rows (needs return_word_boxes).");
 
     m.def("resolve_model_paths",
           [](const EngineConfig& cfg) { return modelPathsToDict(resolveModelPaths(cfg)); },

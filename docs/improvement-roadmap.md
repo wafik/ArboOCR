@@ -22,7 +22,7 @@ date above. This document is a checklist, not a promise of ordering.
 | 7 | Expose accuracy-tuning flags on the CLI | High — Go/Rust/PHP are locked out | S | **done** (`8c01bcb`) |
 | 8 | Word / char-level boxes | Medium — data already computed, then dropped | S | **done** (`HEAD`) |
 | 9 | Visualization helper | Low — README currently hand-waves it | S | **done** (`37107b3`) |
-| 10 | Markdown / text-layout export | Low — #8 done, now unblocked | M | open |
+| 10 | Markdown / text-layout export | Low — #8 done, now unblocked | M | **done** (`HEAD`) |
 | 11 | Tunable intra/inter-op thread counts | Low — workload-dependent | S | open |
 | 12 | CMake `install()` / package export | Medium — contradicts the README pitch | M | **done** (`37107b3`) |
 | 13 | `sortLinesReadingOrder` hard-codes a 12px y-tolerance | Medium — breaks on high-DPI scans | S | **done** (`8c01bcb`) |
@@ -30,8 +30,7 @@ date above. This document is a checklist, not a promise of ordering.
 
 Effort: **S** = under a day, **M** = a few days, **L** = a week or more.
 
-Ten of fourteen are done. Remaining: **#10** markdown export (now unblocked
-by #8), **#6** batch input, **#11** thread controls, and **#14** the
+Eleven of fourteen are done. Remaining: **#6** batch input, **#11** thread controls, and **#14** the
 TensorRT/FP16 validation — a risk rather than a gap, since `useFp16 = true`
 ships as the default and nothing exercises it. The dev machine has no CUDA
 (AMD RX 6600), so #14 runs on the Jetson on **2026-08-10**.

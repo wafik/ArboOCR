@@ -53,6 +53,7 @@ add_library(arboOCR STATIC
     src/arboOCR/recognizer.cpp
     src/arboOCR/engine.cpp
     src/arboOCR/visualize.cpp
+    src/arboOCR/markdown.cpp
     src/arboOCR/model_downloader.cpp
     src/arboOCR/types.cpp
     src/arboOCR/logging.cpp
@@ -107,6 +108,7 @@ add_executable(arboocr_tests
     tests/test_engine.cpp
     tests/test_engine_inference.cpp
     tests/test_visualize.cpp
+    tests/test_markdown.cpp
     tests/test_model_downloader.cpp
     tests/test_logging.cpp
 )

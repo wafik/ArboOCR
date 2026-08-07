@@ -1,4 +1,5 @@
 // cli/arboocr_demo.cpp — minimal arboOCR quickstart: recognize one image.
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include "arboOCR/engine.hpp"
 #include "arboOCR/logging.hpp"
+#include "arboOCR/markdown.hpp"
 #include "arboOCR/visualize.hpp"
 
 int main(int argc, char* argv[]) {
@@ -50,6 +52,8 @@ int main(int argc, char* argv[]) {
         ("log-level", "Log engine events to stderr at this level — debug|info|warn|error (default: silent)",
             cxxopts::value<std::string>())
         ("draw", "Write a copy of the image with detected boxes outlined to this path",
+            cxxopts::value<std::string>())
+        ("markdown", "Write the reconstructed markdown document to this path (implies --word-boxes)",
             cxxopts::value<std::string>())
         ("word-boxes", "Also emit a polygon per word (per character for CJK)",
             cxxopts::value<bool>()->default_value("false"))
@@ -114,7 +118,9 @@ int main(int argc, char* argv[]) {
     cfg.useFp16 = result["fp16"].as<bool>();
     cfg.trtCacheDir = result["trt-cache-dir"].as<std::string>();
     cfg.useClahe = result["clahe"].as<bool>();
-    cfg.returnWordBoxes = result["word-boxes"].as<bool>();
+    // --markdown detects `key | value` rows from the wide gap between words, so
+    // it needs word boxes even when --word-boxes was not asked for.
+    cfg.returnWordBoxes = result["word-boxes"].as<bool>() || result.count("markdown") > 0;
     cfg.detModelPath = result["det-model"].as<std::string>();
     cfg.clsModelPath = result["cls-model"].as<std::string>();
     cfg.recModelPath = result["rec-model"].as<std::string>();
@@ -169,7 +175,31 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Same placement as --draw, for the same reason: composes with --json, and
+    // a write failure is a warning because the recognition itself succeeded.
+    if (result.count("markdown")) {
+        const auto& outPath = result["markdown"].as<std::string>();
+        std::ofstream out(outPath, std::ios::binary);
+        if (!out) {
+            std::cerr << "arboocr_demo: --markdown: cannot open " << outPath << "\n";
+        } else {
+            out << arbo::ocr::toMarkdown(page);
+            out.close();
+            if (!out) {
+                std::cerr << "arboocr_demo: --markdown: failed to write " << outPath << "\n";
+            } else if (!jsonMode) {
+                std::cout << "Markdown: " << outPath << "\n";
+            }
+        }
+    }
+
     if (jsonMode) {
+        // --markdown turns word boxes on internally, but the JSON payload is a
+        // published contract: "words" appears iff the caller asked for it. Drop
+        // them again so --markdown can't silently reshape a wrapper's output.
+        if (!result["word-boxes"].as<bool>()) {
+            for (auto& line : page.lines) line.words.clear();
+        }
         // Pure JSON on stdout, nothing else — callers (e.g. the PHP wrapper)
         // json_decode() the whole stream. Empty lines is still success.
         std::cout << arbo::ocr::toJson(page, engine->backend()) << "\n";

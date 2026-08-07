@@ -10,8 +10,8 @@ if str(_REPO_PYTHON) not in sys.path:
     sys.path.insert(0, str(_REPO_PYTHON))
 
 try:
-    from arboocr import (EngineConfig, resolve_model_paths, to_json, PagePrediction,
-                         LinePrediction, Point2f, WordBox)
+    from arboocr import (EngineConfig, resolve_model_paths, to_json, to_markdown,
+                         PagePrediction, LinePrediction, Point2f, WordBox)
     import arboocr
     _IMPORT_OK = True
     _IMPORT_ERR = ""
@@ -100,6 +100,26 @@ class TestArboocrSmoke(unittest.TestCase):
         self.assertIn("words", to_json(line))
         # Absent when empty, so the shape wrappers parse is unchanged.
         self.assertNotIn("words", to_json(LinePrediction()))
+
+    def test_to_markdown_separates_distant_lines(self):
+        def make_line(text, top, bottom):
+            line = LinePrediction()
+            line.text = text
+            line.score = 0.9
+            line.det_score = 0.9
+            line.polygon = [Point2f(10.0, top), Point2f(210.0, top),
+                            Point2f(210.0, bottom), Point2f(10.0, bottom)]
+            return line
+
+        page = PagePrediction()
+        page.image = "synthetic.png"
+        page.lines = [make_line("first block", 10.0, 30.0),
+                      make_line("second block", 400.0, 420.0)]
+        md = to_markdown(page)
+        self.assertIn("first block", md)
+        self.assertIn("second block", md)
+        # Far apart vertically, so they are separate blocks, not one paragraph.
+        self.assertIn("\n\n", md[md.index("first block"):md.index("second block")])
 
 
 if __name__ == "__main__":
