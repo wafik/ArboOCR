@@ -51,6 +51,8 @@ int main(int argc, char* argv[]) {
             cxxopts::value<std::string>())
         ("draw", "Write a copy of the image with detected boxes outlined to this path",
             cxxopts::value<std::string>())
+        ("word-boxes", "Also emit a polygon per word (per character for CJK)",
+            cxxopts::value<bool>()->default_value("false"))
         ("det-model", "Override detector ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("cls-model", "Override classifier ONNX path", cxxopts::value<std::string>()->default_value(""))
         ("rec-model", "Override recognizer ONNX path", cxxopts::value<std::string>()->default_value(""))
@@ -112,6 +114,7 @@ int main(int argc, char* argv[]) {
     cfg.useFp16 = result["fp16"].as<bool>();
     cfg.trtCacheDir = result["trt-cache-dir"].as<std::string>();
     cfg.useClahe = result["clahe"].as<bool>();
+    cfg.returnWordBoxes = result["word-boxes"].as<bool>();
     cfg.detModelPath = result["det-model"].as<std::string>();
     cfg.clsModelPath = result["cls-model"].as<std::string>();
     cfg.recModelPath = result["rec-model"].as<std::string>();

@@ -103,6 +103,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
 
     // Must be set before loadModel so TensorRT profiles match runtime batch size.
     recognizer_.setRecBatchNum(config.recBatchNum);
+    recognizer_.setReturnSpans(config.returnWordBoxes);
 
     detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
     if (config.useAngleCls) {
@@ -145,14 +146,24 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
 
         std::vector<cv::Mat> partImages;
         partImages.reserve(textBoxes.size());
-        for (auto& box : textBoxes) {
-            partImages.push_back(getRotateCropImage(prepped, box.boxPoint));
+        // Word boxes need to undo whatever getRotateCropImage/angle-cls did to
+        // the crop before a horizontal fraction of it means anything on the
+        // page: a tall box is read along the quad's vertical axis, and a
+        // 180-flipped crop is read backwards. Recording per box beats
+        // recomputing the conditions later, which would drift.
+        std::vector<char> wasTransposed(textBoxes.size(), 0);
+        std::vector<char> wasRotated180(textBoxes.size(), 0);
+        for (size_t i = 0; i < textBoxes.size(); i++) {
+            bool transposed = false;
+            partImages.push_back(getRotateCropImage(prepped, textBoxes[i].boxPoint, &transposed));
+            wasTransposed[i] = transposed ? 1 : 0;
         }
 
         auto angles = classifier_.getAngles(partImages, config_.useAngleCls, /*mostAngle=*/false);
         for (size_t i = 0; i < partImages.size(); i++) {
             if (angles[i].index == 1) {
                 partImages[i] = matRotateClockWise180(partImages[i]);
+                wasRotated180[i] = 1;
             }
         }
 
@@ -166,12 +177,24 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
             if (!keepByConfidence(text, recScore, config_.minimumConfidence)) {
                 continue;
             }
-            result.lines.push_back(LinePrediction{
+            LinePrediction line{
                 cvPointsToPolygon(textBoxes[i].boxPoint),
                 text,
                 recScore,
                 textBoxes[i].score,
-            });
+                {},
+            };
+            if (config_.returnWordBoxes && i < textLines.size()) {
+                line.words = groupTokensIntoWords(
+                    textLines[i].tokens, textLines[i].spans, textLines[i].charScores,
+                    line.polygon, wasTransposed[i] != 0, wasRotated180[i] != 0);
+                // The tokens predate refineDecodedText, which runs on the joined
+                // string and has no index map back. Applying the same rules per
+                // word keeps word text consistent with line text; splitting on
+                // spaces already absorbed the space-collapsing half.
+                for (auto& w : line.words) refineDecodedText(w.text);
+            }
+            result.lines.push_back(std::move(line));
         }
         sortLinesReadingOrder(result.lines);
         log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");

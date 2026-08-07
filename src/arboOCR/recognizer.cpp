@@ -24,6 +24,10 @@ size_t argmax(ForwardIt first, ForwardIt last) {
     return static_cast<size_t>(std::distance(first, std::max_element(first, last)));
 }
 
+// "no CTC run is currently open" sentinel for the span bookkeeping in
+// scoreToTextLine() (index into its local `spans` vector).
+constexpr size_t kNoOpenRun = static_cast<size_t>(-1);
+
 } // namespace
 
 Recognizer::Recognizer() = default;
@@ -31,6 +35,10 @@ Recognizer::~Recognizer() = default;
 
 void Recognizer::setRecBatchNum(int n) {
     recBatchNum_ = n < 1 ? 1 : n;
+}
+
+void Recognizer::setReturnSpans(bool enabled) {
+    returnSpans_ = enabled;
 }
 
 void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
@@ -126,7 +134,8 @@ bool Recognizer::loadKeysFromModelMetadata() {
     return true;
 }
 
-RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w) const {
+RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w,
+                                        float contentFraction) const {
     auto keySize = keys_.size();
     // Per-token decode so gap-space injection can use CTC timestep positions
     // (ppu injectGapSpaces). keys_ entries may be multi-byte UTF-8.
@@ -135,6 +144,22 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
     std::vector<float> positions;
     size_t lastIndex = 0;
     const float invH = h > 0 ? 1.f / static_cast<float>(h) : 1.f;
+
+    // Span bookkeeping (opt-in, see setReturnSpans()). `positions` records
+    // only where each token's run STARTS, because the decode below emits a
+    // token on the first timestep of a run and stays silent for the rest of
+    // it — a glyph occupying timesteps 5..9 leaves a single 5.5/T entry. To
+    // give tokens a real width we track each run's first and last timestep
+    // separately: `openRun` is the index (into `spans`) of the token whose
+    // run is still being extended, and it is closed as soon as `maxIndex`
+    // changes. Blanks close a run too (lastIndex is updated on every
+    // timestep, blank or not), which is exactly what makes a blank-separated
+    // repeat like `a a # a a` come out as two tokens with two disjoint spans
+    // instead of one wide one.
+    const bool wantSpans = returnSpans_;
+    std::vector<TokenSpan> spans;
+    size_t openRun = kNoOpenRun;
+    size_t lastStep = 0; // last timestep actually decoded; closes the final run
 
     for (size_t i = 0; i < h; i++) {
         size_t start = i * w;
@@ -146,19 +171,86 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
         size_t maxIndex = argmax(outputData + start, outputData + stop);
         float maxValue = *std::max_element(outputData + start, outputData + stop);
 
+        // The previously-open run ended at timestep i-1, so its exclusive
+        // end boundary is i. Done before the emit below, so a run of X
+        // butting straight up against a run of Y (no blank between) yields
+        // spans that touch but never overlap.
+        if (wantSpans && openRun != kNoOpenRun && maxIndex != lastIndex) {
+            spans[openRun].end = static_cast<float>(i) * invH;
+            openRun = kNoOpenRun;
+        }
+
         if (maxIndex > 0 && maxIndex < keySize && !(i > 0 && maxIndex == lastIndex)) {
             scores.push_back(maxValue);
             tokens.push_back(keys_[maxIndex]);
             positions.push_back((static_cast<float>(i) + 0.5f) * invH);
+            if (wantSpans) {
+                // Provisional one-timestep extent; `end` is overwritten
+                // above (or after the loop) once the run's real end is known.
+                spans.push_back({static_cast<float>(i) * invH, static_cast<float>(i + 1) * invH});
+                openRun = spans.size() - 1;
+            }
         }
         lastIndex = maxIndex;
+        lastStep = i;
     }
-    injectGapSpaces(tokens, positions, &scores);
+    // The final run has no following timestep to close it — it ends at the
+    // last timestep that was actually decoded (which is h-1 for a complete
+    // buffer, and earlier if the short-buffer guard above cut the loop off).
+    if (wantSpans && openRun != kNoOpenRun) {
+        spans[openRun].end = static_cast<float>(lastStep + 1) * invH;
+    }
+
+    if (wantSpans && !spans.empty()) {
+        // PADDING CORRECTION. `h` is the CTC timestep count over the PADDED
+        // batch strip: runBatchInference() feeds a [batch, 3, kDstHeight,
+        // batchWidth] tensor and reads timeSteps from the model output, so
+        // timesteps span batchWidth — not this crop's real resized width.
+        // A crop narrower than batchWidth therefore has every one of its
+        // fractions compressed toward 0. Dividing by contentFraction
+        // (= crop.cols / batchWidth) maps them back onto the crop's own
+        // content width, which is what page-coordinate mapping needs.
+        //
+        // Deliberately NOT derived from batchWidth/8 or any other assumed
+        // CNN downsample factor: nothing in this repo guarantees a fixed
+        // stride between input width and timestep count, whereas the
+        // batchWidth/crop.cols ratio is exact whatever that stride turns
+        // out to be. The single-crop fallback in runBatch() calls
+        // runBatchInference(single, crop.cols), so there contentFraction is
+        // 1.0 and this whole block is a no-op.
+        const float widthScale = contentFraction > 0.f ? 1.f / contentFraction : 1.f;
+        for (auto& s : spans) {
+            s.begin = clampValue(s.begin * widthScale, 0.f, 1.f);
+            s.end = clampValue(s.end * widthScale, 0.f, 1.f);
+        }
+    }
+
+    // `positions` is deliberately left uncorrected: injectGapSpaces only
+    // compares gaps against a median/quantum derived from those same gaps,
+    // so a uniform rescale cancels out on both sides of its threshold. Not
+    // touching it keeps the decoded `text` bit-for-bit what it was before
+    // spans existed.
+    injectGapSpaces(tokens, positions, &scores, wantSpans ? &spans : nullptr);
     std::string text;
     text.reserve(tokens.size() * 2);
     for (const auto& t : tokens) text += t;
+
+    RawTextLine line;
+    line.charScores = std::move(scores);
+    if (wantSpans) {
+        // Capture the token array BEFORE refineDecodedText() runs. That
+        // function collapses space runs and folds fullwidth FF01-FF5E to
+        // ASCII, changing both the codepoint count and the byte lengths of
+        // `text` with no index map back to tokens/spans. The token array is
+        // the ground truth for box mapping; `text` stays exactly what it has
+        // always been. The two are allowed to disagree — callers building
+        // word boxes re-apply refinement per token themselves.
+        line.tokens = std::move(tokens);
+        line.spans = std::move(spans);
+    }
     refineDecodedText(text);
-    return {text, scores};
+    line.text = std::move(text);
+    return line;
 }
 
 std::vector<float> Recognizer::buildBatchTensor(const std::vector<cv::Mat>& resizedCrops, int batchWidth) const {
@@ -259,12 +351,24 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
     for (int64_t b = 0; b < outBatch && b < static_cast<int64_t>(resizedCrops.size()); b++) {
         int64_t offset = b * perItemCount;
         if (offset + perItemCount > outCount) break; // guard: short buffer
+        // Fraction of the padded batch strip this crop's real content
+        // occupies. timeSteps spans batchWidth (the padded width), so
+        // scoreToTextLine needs this ratio to express token spans as
+        // fractions of the crop itself — see its PADDING CORRECTION note.
+        // Capped at 1.0: a crop wider than batchWidth violates
+        // buildBatchTensor's precondition and was skipped there (its slot
+        // is all zero-padding), so it can't occupy more than the full strip.
+        const int cropCols = resizedCrops[static_cast<size_t>(b)].cols;
+        const float contentFraction = (batchWidth > 0 && cropCols > 0)
+            ? std::min(1.0f, static_cast<float>(cropCols) / static_cast<float>(batchWidth))
+            : 1.0f;
         // Decode straight from this item's slice of the shared output
         // buffer — no per-item copy (numClasses is in the thousands for
         // PP-OCR's CJK dictionaries, so this is a real cost on the hot
         // path, not just style).
         results.push_back(scoreToTextLine(raw + offset, static_cast<size_t>(perItemCount),
-                                           static_cast<size_t>(timeSteps), static_cast<size_t>(numClasses)));
+                                           static_cast<size_t>(timeSteps), static_cast<size_t>(numClasses),
+                                           contentFraction));
     }
     while (results.size() < resizedCrops.size()) {
         results.push_back({"", {}}); // guard: model returned fewer rows than requested

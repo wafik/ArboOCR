@@ -46,8 +46,14 @@ cv::RotatedRect unClipBox(std::vector<cv::Point2f> box, float unClipRatio);
 std::vector<float> substractMeanNormalize(const cv::Mat& src, const float* meanVals, const float* normVals);
 
 /// Perspective-crop + straighten one detected text box out of the full
-/// image, ready for Classifier/Recognizer input.
-cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box);
+/// image, ready for Classifier/Recognizer input. A crop that comes out tall
+/// and narrow is rotated 90 degrees CCW so the recognizer reads *down* the
+/// box rather than across it; optional `wasTransposed` reports whether that
+/// happened (false on every early-return path). Callers that need to map
+/// recognizer output back to page coordinates must pass it — the condition
+/// lives here and only here, so it cannot drift.
+cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box,
+                           bool* wasTransposed = nullptr);
 
 /// Rotate 180 degrees (used when Classifier detects upside-down text).
 cv::Mat matRotateClockWise180(cv::Mat src);
@@ -76,11 +82,39 @@ void sortLinesReadingOrder(std::vector<LinePrediction>& lines);
 
 /// CTC post: insert spaces where horizontal gaps between emitted tokens look
 /// like whitespace (columnar receipts). `positions` are 0..1 fractions of the
-/// crop width (timestep centers). Optional `scores` stays index-aligned.
+/// crop width (timestep centers). Optional `scores` and `spans` stay
+/// index-aligned; an injected space is given the gap it stands for as its
+/// span, i.e. [previous token's end, next token's begin].
 /// Mirrors ppu-paddle-ocr injectGapSpaces (median + 1.5/2.5 quanta).
 void injectGapSpaces(std::vector<std::string>& tokens,
                      std::vector<float>& positions,
-                     std::vector<float>* scores = nullptr);
+                     std::vector<float>* scores = nullptr,
+                     std::vector<TokenSpan>* spans = nullptr);
+
+/// Map a horizontal span of a recognizer crop back to a polygon in
+/// source-image coordinates. `lineQuad` is a LinePrediction::polygon: exactly
+/// 4 points, 0=TL 1=TR 2=BR 3=BL (getMinBoxes' order). `wasTransposed` /
+/// `wasRotated180` are the two orientation changes the crop went through
+/// (getRotateCropImage's 90-degree CCW rotation and the classifier's 180 flip)
+/// and must be reported by those steps, not re-derived here.
+/// Returns the span's quad in the same TL,TR,BR,BL page order, or an empty
+/// polygon if `lineQuad` does not have 4 points. Spans are clamped to [0,1]
+/// and a reversed span (begin > end) is swapped.
+Polygon spanToPolygon(const Polygon& lineQuad, TokenSpan span,
+                      bool wasTransposed, bool wasRotated180);
+
+/// Group decoded tokens into word boxes. Tokens are split on space tokens;
+/// CJK tokens each become their own word (no spaces to split on). The three
+/// token vectors must be index-aligned — mismatched sizes return empty rather
+/// than reading out of bounds. Each word's span runs from its first token's
+/// begin to its last token's end, its score is the mean of its tokens' scores,
+/// and its polygon comes from spanToPolygon.
+std::vector<WordBox> groupTokensIntoWords(const std::vector<std::string>& tokens,
+                                          const std::vector<TokenSpan>& spans,
+                                          const std::vector<float>& scores,
+                                          const Polygon& lineQuad,
+                                          bool wasTransposed,
+                                          bool wasRotated180);
 
 /// Collapse space runs; map fullwidth ASCII/ideographic space → halfwidth when
 /// the string has no CJK. In-place. Mirrors ppu refineDecodedChars.

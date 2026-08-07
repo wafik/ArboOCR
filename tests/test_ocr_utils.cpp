@@ -262,3 +262,266 @@ TEST_CASE("getRotateCropImage still crops a valid box correctly (regression guar
     CHECK(result.cols > 0);
     CHECK(result.rows > 0);
 }
+
+TEST_CASE("getRotateCropImage reports whether it transposed the crop") {
+    cv::Mat src = cv::Mat::zeros(100, 100, CV_8UC3);
+    src(cv::Rect(5, 5, 90, 90)).setTo(cv::Scalar(255, 255, 255));
+
+    // Wide box (30x30, aspect 1.0): under the rows >= cols*1.5 threshold.
+    std::vector<cv::Point> wide = {{10, 10}, {40, 10}, {40, 40}, {10, 40}};
+    bool transposed = true; // seeded wrong on purpose: the call must overwrite it
+    cv::Mat wideCrop = getRotateCropImage(src, wide, &transposed);
+    CHECK_FALSE(wideCrop.empty());
+    CHECK_FALSE(transposed);
+
+    // Tall box (30 wide x 80 tall): 80 >= 30*1.5, so it is rotated 90 CCW and
+    // the crop comes back wider than it is tall.
+    std::vector<cv::Point> tall = {{10, 10}, {40, 10}, {40, 90}, {10, 90}};
+    transposed = false;
+    cv::Mat tallCrop = getRotateCropImage(src, tall, &transposed);
+    CHECK_FALSE(tallCrop.empty());
+    CHECK(transposed);
+    CHECK(tallCrop.cols > tallCrop.rows);
+
+    // Early-return guards must still leave the flag defined and false.
+    cv::Mat empty;
+    transposed = true;
+    cv::Mat none = getRotateCropImage(empty, tall, &transposed);
+    CHECK(none.empty());
+    CHECK_FALSE(transposed);
+
+    // Still callable without the flag (default argument).
+    CHECK_FALSE(getRotateCropImage(src, wide).empty());
+}
+
+namespace {
+// 100 wide x 40 tall axis-aligned quad in getMinBoxes order: TL, TR, BR, BL.
+Polygon makeQuad(float scale = 1.0f) {
+    return {
+        {10.0f * scale, 20.0f * scale},
+        {110.0f * scale, 20.0f * scale},
+        {110.0f * scale, 60.0f * scale},
+        {10.0f * scale, 60.0f * scale},
+    };
+}
+
+void checkPoint(const Point2f& got, float x, float y) {
+    CHECK(got.x == doctest::Approx(x));
+    CHECK(got.y == doctest::Approx(y));
+}
+} // namespace
+
+TEST_CASE("spanToPolygon reproduces the quad for a full span and halves it for [0,0.5]") {
+    const Polygon quad = makeQuad();
+
+    Polygon full = spanToPolygon(quad, TokenSpan{0.0f, 1.0f}, false, false);
+    REQUIRE(full.size() == 4);
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(full[i], quad[i].x, quad[i].y);
+    }
+
+    // Left half: x runs 10..60, full height, still TL,TR,BR,BL.
+    Polygon left = spanToPolygon(quad, TokenSpan{0.0f, 0.5f}, false, false);
+    REQUIRE(left.size() == 4);
+    checkPoint(left[0], 10.0f, 20.0f);
+    checkPoint(left[1], 60.0f, 20.0f);
+    checkPoint(left[2], 60.0f, 60.0f);
+    checkPoint(left[3], 10.0f, 60.0f);
+}
+
+TEST_CASE("spanToPolygon is scale-invariant") {
+    const Polygon quad = makeQuad();
+    const Polygon quad4x = makeQuad(4.0f);
+    const TokenSpan span{0.25f, 0.5f};
+
+    Polygon a = spanToPolygon(quad, span, false, false);
+    Polygon b = spanToPolygon(quad4x, span, false, false);
+    REQUIRE(a.size() == 4);
+    REQUIRE(b.size() == 4);
+    // The same span on the same page at 4x resolution is the same box at 4x.
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(b[i], a[i].x * 4.0f, a[i].y * 4.0f);
+    }
+}
+
+TEST_CASE("spanToPolygon maps a 180-rotated crop's left onto the page's right") {
+    const Polygon quad = makeQuad();
+    // The crop was flipped 180, so its first quarter is the page's LAST
+    // quarter: span [0,0.25] -> [0.75,1] -> x in 85..110.
+    Polygon first = spanToPolygon(quad, TokenSpan{0.0f, 0.25f}, false, true);
+    REQUIRE(first.size() == 4);
+    checkPoint(first[0], 85.0f, 20.0f);
+    checkPoint(first[1], 110.0f, 20.0f);
+    checkPoint(first[2], 110.0f, 60.0f);
+    checkPoint(first[3], 85.0f, 60.0f);
+
+    // And a full span is unchanged by the flip: [0,1] -> [0,1].
+    Polygon full = spanToPolygon(quad, TokenSpan{0.0f, 1.0f}, false, true);
+    REQUIRE(full.size() == 4);
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(full[i], quad[i].x, quad[i].y);
+    }
+}
+
+TEST_CASE("spanToPolygon reads down the quad when the crop was transposed") {
+    const Polygon quad = makeQuad();
+    // Transposed crop: the recognizer read top-to-bottom, so the first quarter
+    // is the quad's TOP quarter (y 20..30) spanning its full width (x 10..110).
+    Polygon top = spanToPolygon(quad, TokenSpan{0.0f, 0.25f}, true, false);
+    REQUIRE(top.size() == 4);
+    checkPoint(top[0], 10.0f, 20.0f);
+    checkPoint(top[1], 110.0f, 20.0f);
+    checkPoint(top[2], 110.0f, 30.0f);
+    checkPoint(top[3], 10.0f, 30.0f);
+
+    // Transposed AND flipped 180: same vertical reading axis, reversed, so the
+    // first quarter lands on the quad's BOTTOM quarter (y 50..60).
+    Polygon bottom = spanToPolygon(quad, TokenSpan{0.0f, 0.25f}, true, true);
+    REQUIRE(bottom.size() == 4);
+    checkPoint(bottom[0], 10.0f, 50.0f);
+    checkPoint(bottom[1], 110.0f, 50.0f);
+    checkPoint(bottom[2], 110.0f, 60.0f);
+    checkPoint(bottom[3], 10.0f, 60.0f);
+}
+
+TEST_CASE("spanToPolygon handles degenerate quads and out-of-range spans") {
+    // Not a quad -> no reading axis -> empty, not a crash.
+    Polygon threePoints = {{0.0f, 0.0f}, {10.0f, 0.0f}, {10.0f, 10.0f}};
+    CHECK(spanToPolygon(threePoints, TokenSpan{0.0f, 1.0f}, false, false).empty());
+    CHECK(spanToPolygon(Polygon{}, TokenSpan{0.0f, 1.0f}, false, false).empty());
+
+    const Polygon quad = makeQuad();
+    const Polygon expected = spanToPolygon(quad, TokenSpan{0.0f, 0.5f}, false, false);
+    REQUIRE(expected.size() == 4);
+
+    // begin > end is swapped, not read backwards.
+    Polygon reversed = spanToPolygon(quad, TokenSpan{0.5f, 0.0f}, false, false);
+    REQUIRE(reversed.size() == 4);
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(reversed[i], expected[i].x, expected[i].y);
+    }
+
+    // Out of [0,1] is clamped, so the box never escapes the line's own quad.
+    Polygon clamped = spanToPolygon(quad, TokenSpan{-3.0f, 0.5f}, false, false);
+    REQUIRE(clamped.size() == 4);
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(clamped[i], expected[i].x, expected[i].y);
+    }
+    Polygon wide = spanToPolygon(quad, TokenSpan{-1.0f, 7.0f}, false, false);
+    REQUIRE(wide.size() == 4);
+    for (size_t i = 0; i < 4; ++i) {
+        checkPoint(wide[i], quad[i].x, quad[i].y);
+    }
+}
+
+TEST_CASE("groupTokensIntoWords splits on spaces and averages scores") {
+    const Polygon quad = makeQuad(); // x 10..110
+    std::vector<std::string> tokens = {"h", "i", " ", "y", "o", "u"};
+    std::vector<TokenSpan> spans = {
+        {0.0f, 0.1f}, {0.1f, 0.2f}, {0.2f, 0.3f},
+        {0.3f, 0.4f}, {0.4f, 0.5f}, {0.5f, 0.6f},
+    };
+    std::vector<float> scores = {0.9f, 0.8f, 0.5f, 0.6f, 0.7f, 0.8f};
+
+    auto words = groupTokensIntoWords(tokens, spans, scores, quad, false, false);
+    REQUIRE(words.size() == 2);
+
+    CHECK(words[0].text == "hi");
+    CHECK(words[0].score == doctest::Approx(0.85f));
+    REQUIRE(words[0].polygon.size() == 4);
+    // span [0.0,0.2] of a 100px-wide quad starting at x=10.
+    checkPoint(words[0].polygon[0], 10.0f, 20.0f);
+    checkPoint(words[0].polygon[1], 30.0f, 20.0f);
+
+    CHECK(words[1].text == "you");
+    CHECK(words[1].score == doctest::Approx((0.6f + 0.7f + 0.8f) / 3.0f));
+    REQUIRE(words[1].polygon.size() == 4);
+    // span [0.3,0.6].
+    checkPoint(words[1].polygon[0], 40.0f, 20.0f);
+    checkPoint(words[1].polygon[1], 70.0f, 20.0f);
+}
+
+TEST_CASE("groupTokensIntoWords gives each CJK character its own word") {
+    const Polygon quad = makeQuad();
+    // U+4E2D = UTF-8 E4 B8 AD (avoid \x in string literal for MSVC)
+    std::string cjk;
+    cjk += static_cast<char>(0xE4);
+    cjk += static_cast<char>(0xB8);
+    cjk += static_cast<char>(0xAD);
+
+    std::vector<std::string> tokens = {"a", cjk, "b"};
+    std::vector<TokenSpan> spans = {{0.0f, 0.3f}, {0.3f, 0.6f}, {0.6f, 0.9f}};
+    std::vector<float> scores = {0.5f, 0.6f, 0.7f};
+
+    auto words = groupTokensIntoWords(tokens, spans, scores, quad, false, false);
+    // The CJK token has no space around it but must still break the run.
+    REQUIRE(words.size() == 3);
+    CHECK(words[0].text == "a");
+    CHECK(words[1].text == cjk);
+    CHECK(words[1].score == doctest::Approx(0.6f));
+    CHECK(words[2].text == "b");
+    REQUIRE(words[1].polygon.size() == 4);
+    checkPoint(words[1].polygon[0], 40.0f, 20.0f); // 10 + 0.3*100
+    checkPoint(words[1].polygon[1], 70.0f, 20.0f); // 10 + 0.6*100
+}
+
+TEST_CASE("groupTokensIntoWords returns empty on mismatched input sizes") {
+    const Polygon quad = makeQuad();
+    std::vector<std::string> tokens = {"a", "b"};
+    std::vector<TokenSpan> spans = {{0.0f, 0.5f}};
+    std::vector<float> scores = {0.9f, 0.9f};
+    CHECK(groupTokensIntoWords(tokens, spans, scores, quad, false, false).empty());
+
+    std::vector<TokenSpan> spans2 = {{0.0f, 0.5f}, {0.5f, 1.0f}};
+    std::vector<float> shortScores = {0.9f};
+    CHECK(groupTokensIntoWords(tokens, spans2, shortScores, quad, false, false).empty());
+
+    // Empty in, empty out — not a mismatch.
+    std::vector<std::string> noTokens;
+    std::vector<TokenSpan> noSpans;
+    std::vector<float> noScores;
+    CHECK(groupTokensIntoWords(noTokens, noSpans, noScores, quad, false, false).empty());
+
+    // Empty tokens are skipped, not emitted as zero-width words.
+    std::vector<std::string> withEmpty = {"a", "", "b"};
+    std::vector<TokenSpan> spans3 = {{0.0f, 0.3f}, {0.3f, 0.3f}, {0.3f, 0.6f}};
+    std::vector<float> scores3 = {0.9f, 0.1f, 0.9f};
+    auto words = groupTokensIntoWords(withEmpty, spans3, scores3, quad, false, false);
+    REQUIRE(words.size() == 1);
+    CHECK(words[0].text == "ab");
+    CHECK(words[0].score == doctest::Approx(0.9f));
+}
+
+TEST_CASE("injectGapSpaces keeps an optional spans vector aligned") {
+    std::vector<std::string> tokens = {"A", "B", "C", "D", "1", "2", "3", "4"};
+    std::vector<float> pos = {0.05f, 0.10f, 0.15f, 0.20f, 0.70f, 0.75f, 0.80f, 0.85f};
+    std::vector<float> scores(8, 0.9f);
+    std::vector<TokenSpan> spans;
+    for (float p : pos) spans.push_back(TokenSpan{p - 0.02f, p + 0.02f});
+
+    injectGapSpaces(tokens, pos, &scores, &spans);
+
+    REQUIRE(tokens.size() == 9); // exactly one space, in the D|1 gap
+    CHECK(pos.size() == tokens.size());
+    CHECK(scores.size() == tokens.size());
+    CHECK(spans.size() == tokens.size());
+    REQUIRE(tokens[4] == " ");
+    // The injected space's span is the gap itself: previous token's end to
+    // next token's begin, i.e. 0.20+0.02 .. 0.70-0.02.
+    CHECK(spans[4].begin == doctest::Approx(0.22f));
+    CHECK(spans[4].end == doctest::Approx(0.68f));
+    // Neighbours are untouched and still index-aligned with their tokens.
+    CHECK(spans[3].end == doctest::Approx(0.22f));
+    CHECK(spans[5].begin == doctest::Approx(0.68f));
+}
+
+TEST_CASE("injectGapSpaces ignores a spans vector of the wrong length") {
+    std::vector<std::string> tokens = {"A", "B", "C", "D", "1", "2", "3", "4"};
+    std::vector<float> pos = {0.05f, 0.10f, 0.15f, 0.20f, 0.70f, 0.75f, 0.80f, 0.85f};
+    std::vector<TokenSpan> spans(3); // not index-aligned
+    injectGapSpaces(tokens, pos, nullptr, &spans);
+    // Same guard as `scores`: bail out entirely rather than desync the vectors.
+    CHECK(tokens.size() == 8);
+    CHECK(pos.size() == 8);
+    CHECK(spans.size() == 3);
+}

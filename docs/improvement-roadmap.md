@@ -20,21 +20,21 @@ date above. This document is a checklist, not a promise of ordering.
 | 5 | No byte-buffer (encoded-bytes) input | Medium — temp file per web request | S | **done** (`37107b3`) |
 | 6 | One image per process spawn | Medium — 200 model loads for 200 pages | M | open |
 | 7 | Expose accuracy-tuning flags on the CLI | High — Go/Rust/PHP are locked out | S | **done** (`8c01bcb`) |
-| 8 | Word / char-level boxes | Medium — data already computed, then dropped | S | open |
+| 8 | Word / char-level boxes | Medium — data already computed, then dropped | S | **done** (`HEAD`) |
 | 9 | Visualization helper | Low — README currently hand-waves it | S | **done** (`37107b3`) |
-| 10 | Markdown / text-layout export | Low — needs #8 first | M | open |
+| 10 | Markdown / text-layout export | Low — #8 done, now unblocked | M | open |
 | 11 | Tunable intra/inter-op thread counts | Low — workload-dependent | S | open |
 | 12 | CMake `install()` / package export | Medium — contradicts the README pitch | M | **done** (`37107b3`) |
 | 13 | `sortLinesReadingOrder` hard-codes a 12px y-tolerance | Medium — breaks on high-DPI scans | S | **done** (`8c01bcb`) |
-| 14 | No test covers the TensorRT path or the FP16 flag | Medium — unvalidated default | M | open — harness ready (`scripts/fp16_ab.py`), needs GPU |
+| 14 | No test covers the TensorRT path or the FP16 flag | Medium — unvalidated default | M | open — harness ready (`scripts/fp16_ab.py`), Jetson run 2026-08-10 |
 
 Effort: **S** = under a day, **M** = a few days, **L** = a week or more.
 
-Nine of fourteen are done. The five that remain are, in the order they
-unblock each other: **#8** word/char boxes (which **#10** markdown export
-needs), **#6** batch input, **#11** thread controls, and **#14** the
-TensorRT/FP16 validation — the one item that is a risk rather than a gap,
-since `useFp16 = true` ships as the default and nothing exercises it.
+Ten of fourteen are done. Remaining: **#10** markdown export (now unblocked
+by #8), **#6** batch input, **#11** thread controls, and **#14** the
+TensorRT/FP16 validation — a risk rather than a gap, since `useFp16 = true`
+ships as the default and nothing exercises it. The dev machine has no CUDA
+(AMD RX 6600), so #14 runs on the Jetson on **2026-08-10**.
 
 ---
 

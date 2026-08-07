@@ -55,6 +55,18 @@ public:
     void setRecBatchNum(int n);
     int recBatchNum() const { return recBatchNum_; }
 
+    /// Opt-in per-token output: when enabled, every RawTextLine also carries
+    /// `tokens` (one entry per emitted CTC token) and `spans` (that token's
+    /// horizontal extent as a fraction of the crop's *content* width), so a
+    /// caller can map tokens back to page coordinates for word boxes.
+    /// Off by default: deriving the spans during the CTC decode costs
+    /// essentially nothing (it's bookkeeping the decode loop already has the
+    /// information for), but carrying two extra vectors per line for every
+    /// line of every page is not free — so it's paid for only when the
+    /// caller actually wants word boxes.
+    void setReturnSpans(bool enabled);
+    bool returnSpans() const { return returnSpans_; }
+
     /// Recognize one cropped, angle-corrected text-line image per input Mat,
     /// returned in the SAME order as `partImages`.
     ///
@@ -97,9 +109,13 @@ public:
     /// Test-only entry point: run the CTC decode directly on a raw output
     /// buffer without going through ONNXRuntime inference. Exposed so
     /// test_recognizer.cpp can validate decode correctness without a real
-    /// model.
-    RawTextLine decodeForTest(const std::vector<float>& outputData, size_t h, size_t w) const {
-        return scoreToTextLine(outputData.data(), outputData.size(), h, w);
+    /// model. `contentFraction` defaults to 1.0 (crop exactly fills the
+    /// batch strip, no padding to divide out) so existing call sites are
+    /// unaffected; pass < 1.0 to exercise the padding correction in
+    /// scoreToTextLine().
+    RawTextLine decodeForTest(const std::vector<float>& outputData, size_t h, size_t w,
+                              float contentFraction = 1.0f) const {
+        return scoreToTextLine(outputData.data(), outputData.size(), h, w, contentFraction);
     }
 
     /// Test-only entry point: build the padded, normalized batch tensor
@@ -118,7 +134,19 @@ private:
     /// std::vector& so callers slicing one batch item's rows out of a
     /// larger ONNXRuntime output buffer (see runBatchInference()) don't
     /// need to materialize a per-item copy just to call this.
-    RawTextLine scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w) const;
+    ///
+    /// `h` is the CTC timestep count, which corresponds to the PADDED batch
+    /// width (see runBatchInference()), not to this crop's real resized
+    /// width. `contentFraction` is `crop.cols / batchWidth` — the fraction
+    /// of that padded strip actually occupied by image content — and is used
+    /// to rescale timestep fractions onto the crop's own content width when
+    /// filling RawTextLine::spans. A single precomputed ratio is passed
+    /// rather than the two widths because that is the only thing the decode
+    /// needs: it keeps this function ignorant of batching entirely, and it
+    /// gives the test seam one knob instead of two coupled ones. Values <= 0
+    /// are treated as 1.0 (no correction).
+    RawTextLine scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w,
+                                float contentFraction = 1.0f) const;
 
     /// Builds the padded, normalized [batchSize, 3, kDstHeight, batchWidth]
     /// CHW tensor buffer from already-resized crops: each crop is
@@ -167,6 +195,8 @@ private:
     // setRecBatchNum() / EngineConfig::recBatchNum before loadModel().
     // rec_image_shape [3, 48, 320] -> kRefImgWidth seeds max_wh_ratio per batch.
     int recBatchNum_ = 6;
+    // Off by default — see setReturnSpans().
+    bool returnSpans_ = false;
     static constexpr int kRefImgWidth = 320;
     static constexpr int kDstHeight = 48;
     const float meanValues_[3] = {127.5f, 127.5f, 127.5f};

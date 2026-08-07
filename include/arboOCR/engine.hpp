@@ -71,6 +71,11 @@ int detLimitSideLen = 960;
     // drop_score / ppu minimumConfidence). Symbol-only text uses bar+0.3.
     // 0 disables filtering (legacy RapidOcrOnnx keeps every box).
     float minimumConfidence = 0.5f;
+    // Populate LinePrediction::words with a polygon per word (per character for
+    // CJK, which has no spaces to split on). Off by default: the spans it needs
+    // are nearly free to compute, but carrying them for every line of every page
+    // is not, and most callers only want line-level output.
+    bool returnWordBoxes = false;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
     // Optional absolute/relative paths. Empty = use modelsDir + default names
