@@ -114,9 +114,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     const bool batchMode = result.count("images-from") > 0;
-    if (result.count("help") || (!result.count("image") && !batchMode)) {
+    // Asking for help is not a usage error: --help exits 0 so `cmd --help` in a
+    // CI check or a wrapper's install probe succeeds. Giving no input at all
+    // still prints the same text and exits 1.
+    if (result.count("help")) {
         std::cout << opts.help() << "\n" << kExitCodesHelp << std::endl;
-        return (result.count("image") || batchMode) ? 0 : 1;
+        return 0;
+    }
+    if (!result.count("image") && !batchMode) {
+        std::cout << opts.help() << "\n" << kExitCodesHelp << std::endl;
+        return 1;
     }
     if (result.count("image") && batchMode) {
         std::cerr << "arboocr_demo: --image and --images-from are mutually exclusive"

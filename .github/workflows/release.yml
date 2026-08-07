@@ -24,15 +24,16 @@ jobs:
           restore-keys: |
             vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
             vcpkg-windows-x64-
+          save-always: true
 
       - name: Configure
-        run: cmake --preset windows-x64
+        run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
 
       - name: Test
-        run: ctest --test-dir build/windows-x64 --config Release --output-on-failure
+        run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
 
       - name: Package
         run: |
@@ -55,10 +56,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build pkg-config gperf autoconf autoconf-archive automake libtool libtool-bin patchelf
+          sudo apt-get install -y \
+            build-essential \
+            ninja-build \
+            pkg-config \
+            gperf \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool \
+            libtool-bin \
+            patchelf \
+            libxi-dev \
+            libxtst-dev \
+            libxext-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libgles2-mesa-dev \
+            libwayland-dev
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -73,15 +106,19 @@ jobs:
           restore-keys: |
             vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
             vcpkg-linux-x64-
+          save-always: true
 
       - name: Configure
-        run: cmake --preset linux-x64
+        run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
+
+      - name: Clean vcpkg buildtrees
+        run: rm -rf build/linux-x64/vcpkg_installed/*/buildtrees/* || true
 
       - name: Build
         run: cmake --build build/linux-x64 --config Release -j$(nproc)
 
       - name: Test
-        run: ctest --test-dir build/linux-x64 --config Release --output-on-failure
+        run: ctest --test-dir build/linux-x64 -C Release --output-on-failure
 
       - name: Package
         run: |
@@ -93,9 +130,12 @@ jobs:
           # Bundle every shared lib the binary resolves outside system dirs
           # (vcpkg-built onnxruntime/opencv/curl and their deps), and point
           # the binary at them via a relative RPATH so it's self-contained.
+          # grep exits 1 on zero matches (e.g. everything is statically
+          # linked except system libs) — with pipefail that would abort the
+          # whole step even though "nothing extra to bundle" isn't an error.
           ldd "$bin" | awk '{print $3}' | grep -E '^/' | grep -v -E '^/lib|^/usr/lib' | while read -r lib; do
             cp -L "$lib" "$out/"
-          done
+          done || true
           cp LICENSE THIRD_PARTY_NOTICES.md "$out/"
           patchelf --set-rpath '$ORIGIN' "$out/arboocr_demo" || true
           tar czf arboocr-linux-x64.tar.gz -C package arboocr-linux-x64
