@@ -85,7 +85,12 @@ else()
             PATH_SUFFIXES onnxruntime/core/session onnxruntime
         )
         if(ONNXRUNTIME_INCLUDE_DIR)
-            target_include_directories(arboOCR PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+            # BUILD_INTERFACE: under vcpkg this resolves inside the build tree
+            # (vcpkg_installed/), and install(EXPORT) hard-errors on interface
+            # paths there. Installed consumers get the header dir from
+            # find_dependency(onnxruntime) in arboOCRConfig.cmake instead.
+            target_include_directories(arboOCR PUBLIC
+                $<BUILD_INTERFACE:${ONNXRUNTIME_INCLUDE_DIR}>)
         endif()
     endif()
 endif()
