@@ -9,3 +9,5 @@ python/arboocr/_arboocr*.pyd
 python/arboocr/_arboocr*.so
 .superpowers/
 .claude-flow
+.claude/worktrees
+.mimocode
