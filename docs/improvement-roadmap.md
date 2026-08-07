@@ -61,19 +61,38 @@ purchase price of that memory is roughly 13% inference latency. RapidOCR ships
 `enable_cpu_mem_arena: false` as its shipped default (`parameters.md:113`) —
 they made this call already.
 
-Jetson Nano is arboOCR's stated target and its benchmark machine
-(`docs/jetson-verification.md`). On a 4 GB Nano this is not a tuning knob; it is
-the difference between running and being OOM-killed.
+**Fix.** `opts.DisableCpuMemArena()` in each of the three `loadModel()` bodies.
+(`AddConfigEntry("session.arena_extend_strategy", ...)` was also proposed here —
+it is **not a valid ORT session config key**; `onnxruntime_session_options_config_keys.h`
+defines no arena key, and an invalid key can throw at session creation. Dropped.)
 
-**Fix.** In each of the three `loadModel()` bodies:
+#### Measured on arboOCR — the RapidOCR numbers do not transfer
 
-```cpp
-opts.DisableCpuMemArena();
-opts.AddConfigEntry("session.arena_extend_strategy", "kSameAsRequested");
-```
+Shipped first, measured after, on the 5-image SROIE smoke set, `small`, CPU,
+median of 3 runs. Same local build both ways, so this isolates the flag rather
+than comparing against a CI release binary:
 
-Optionally gate behind an `EngineConfig` bool defaulting to *disabled* — matching
-RapidOCR — rather than defaulting to ORT's arena-on behaviour.
+| Arena | Peak RSS | Engine ms/image |
+|---|---|---|
+| on (ORT default) | 235 MB | 564 |
+| **off (shipped)** | **135 MB** | **663** |
+
+So the real trade for arboOCR is **−100 MB (−43%) for +99 ms (+17.6%)** — the
+latency cost is close to RapidOCR's ~13%, but the memory saving is 100 MB, not
+5.6 GB. Their figure came from their workload, not this one.
+
+That means **the "difference between running and being OOM-killed on a 4 GB
+Nano" framing originally written here was not supported by arboOCR's own
+numbers**, and is withdrawn. 235 MB is not fatal on a Nano.
+
+The change still stands, for a reason the single-shot measurement above cannot
+show: the arena never returns memory, so a long-running process settles at the
+high-water mark across every image size it has seen, while a one-shot CLI run
+only ever shows one image's peak. Edge-first defaults should favour the bounded
+side. But +17.6% latency is a real cost that nobody had measured, and if
+throughput matters more than footprint for a given deployment, this is a
+defensible thing to make configurable — it is the same shape of decision as the
+thread counts in item #11.
 
 ### 2. `getScaleParam` upscales small images
 
