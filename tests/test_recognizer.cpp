@@ -201,3 +201,234 @@ TEST_CASE("buildBatchTensor: a crop wider than batchWidth is skipped, not an out
         CHECK(v == doctest::Approx(0.0f));
     }
 }
+
+// --- Per-token span tests (setReturnSpans / RawTextLine::spans) -----------
+// These pin down the two things that are easy to get silently wrong when
+// mapping decoded tokens back to page coordinates:
+//   1. A token's span must cover its whole CTC run, not just the single
+//      timestep the decode loop emits on.
+//   2. Timesteps span the PADDED batch width, so a crop narrower than its
+//      batch's shared width has every fraction compressed toward 0 unless
+//      the batchWidth/crop.cols correction is applied.
+// Everything below drives decodeForTest(), so no ONNX model is involved.
+
+namespace {
+// Build a synthetic CTC logit buffer laid out [timesteps, numClasses]:
+// `argmaxPerStep[t]` is the class index that wins at timestep t (0 = CTC
+// blank). It gets 1.0 and every other class stays at 0.0, so the argmax is
+// unambiguous and the recorded score is exactly 1.0.
+std::vector<float> ctcOutput(const std::vector<int>& argmaxPerStep, int numClasses) {
+    std::vector<float> out(argmaxPerStep.size() * static_cast<size_t>(numClasses), 0.0f);
+    for (size_t t = 0; t < argmaxPerStep.size(); t++) {
+        out[t * static_cast<size_t>(numClasses) + static_cast<size_t>(argmaxPerStep[t])] = 1.0f;
+    }
+    return out;
+}
+} // namespace
+
+TEST_CASE("returnSpans is off by default: tokens/spans stay empty and text is unchanged") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    // keys = ["#", "a", "b", "c", "d", "e", " "]  (indices 0..6)
+    CHECK(net.returnSpans() == false);
+    // 6 timesteps: 'a' owns 0-1, blank at 2, 'b' owns 3-5.
+    auto output = ctcOutput({1, 1, 0, 2, 2, 2}, 7);
+    auto line = net.decodeForTest(output, 6, 7);
+    CHECK(line.text == "ab");
+    CHECK(line.charScores.size() == 2);
+    // The opt-in guard: no caller asked for word boxes, so nothing extra is
+    // carried on the result.
+    CHECK(line.tokens.empty());
+    CHECK(line.spans.empty());
+}
+
+TEST_CASE("returnSpans on, no padding: each span covers its token's whole CTC run") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setReturnSpans(true);
+    CHECK(net.returnSpans() == true);
+    // Same logits as the off-by-default case above: 'a' owns timesteps 0-1,
+    // 'b' owns timesteps 3-5. contentFraction defaults to 1.0 (the crop
+    // exactly filled the batch strip, C == W), so no padding correction.
+    auto output = ctcOutput({1, 1, 0, 2, 2, 2}, 7);
+    auto line = net.decodeForTest(output, 6, 7);
+
+    CHECK(line.text == "ab"); // identical to the spans-off run: text never changes
+    REQUIRE(line.tokens.size() == 2);
+    REQUIRE(line.spans.size() == 2);
+    CHECK(line.charScores.size() == 2);
+    CHECK(line.tokens[0] == "a");
+    CHECK(line.tokens[1] == "b");
+
+    // 'a' occupies timesteps [0,2) of 6 -> [0, 1/3]. 'b' occupies [3,6) of 6
+    // -> [1/2, 1]; its run has no following timestep to close it, so it must
+    // close at the end of the sequence rather than one timestep after it
+    // started.
+    CHECK(line.spans[0].begin == doctest::Approx(0.0f));
+    CHECK(line.spans[0].end == doctest::Approx(2.0f / 6.0f));
+    CHECK(line.spans[1].begin == doctest::Approx(3.0f / 6.0f));
+    CHECK(line.spans[1].end == doctest::Approx(1.0f));
+
+    // Ordered, non-overlapping, inside [0,1].
+    CHECK(line.spans[0].begin < line.spans[0].end);
+    CHECK(line.spans[1].begin < line.spans[1].end);
+    CHECK(line.spans[0].end <= line.spans[1].begin);
+    for (const auto& s : line.spans) {
+        CHECK(s.begin >= 0.0f);
+        CHECK(s.end <= 1.0f);
+    }
+
+    // Widths proportional to run lengths: 2 timesteps vs 3.
+    const float widthA = line.spans[0].end - line.spans[0].begin;
+    const float widthB = line.spans[1].end - line.spans[1].begin;
+    CHECK(widthA == doctest::Approx(2.0f / 6.0f));
+    CHECK(widthB == doctest::Approx(3.0f / 6.0f));
+    CHECK(widthB / widthA == doctest::Approx(1.5f));
+}
+
+TEST_CASE("returnSpans with padding: spans are rescaled onto the crop's content width") {
+    // Scenario: the crop was resized to C columns and zero-padded out to
+    // W = 2*C before inference, so the model's timesteps cover the PADDED
+    // strip — the glyphs sit in the first half and the tail decodes to CTC
+    // blank (what a trained CRNN emits over padding columns). Without the
+    // W/C correction every span lands at half its true content-relative
+    // position. This is the case that catches that bug.
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setReturnSpans(true);
+    // 12 timesteps: 'a' owns 0-1, 'b' owns 3-5, timesteps 6-11 are padding.
+    auto output = ctcOutput({1, 1, 0, 2, 2, 2, 0, 0, 0, 0, 0, 0}, 7);
+
+    // Uncorrected (contentFraction = 1.0) -> fractions of the PADDED strip.
+    auto padded = net.decodeForTest(output, 12, 7, 1.0f);
+    REQUIRE(padded.spans.size() == 2);
+    CHECK(padded.spans[0].begin == doctest::Approx(0.0f));
+    CHECK(padded.spans[0].end == doctest::Approx(2.0f / 12.0f));
+    CHECK(padded.spans[1].begin == doctest::Approx(3.0f / 12.0f));
+    CHECK(padded.spans[1].end == doctest::Approx(6.0f / 12.0f));
+
+    // Corrected (contentFraction = C/W = 0.5) -> exactly double every fraction.
+    auto corrected = net.decodeForTest(output, 12, 7, 0.5f);
+    REQUIRE(corrected.spans.size() == 2);
+    for (size_t i = 0; i < corrected.spans.size(); i++) {
+        CHECK(corrected.spans[i].begin == doctest::Approx(2.0f * padded.spans[i].begin));
+        CHECK(corrected.spans[i].end == doctest::Approx(2.0f * padded.spans[i].end));
+        CHECK(corrected.spans[i].begin >= 0.0f);
+        CHECK(corrected.spans[i].end <= 1.0f);
+    }
+    CHECK(corrected.spans[0].begin == doctest::Approx(0.0f));
+    CHECK(corrected.spans[0].end == doctest::Approx(1.0f / 3.0f));
+    CHECK(corrected.spans[1].begin == doctest::Approx(0.5f));
+    CHECK(corrected.spans[1].end == doctest::Approx(1.0f));
+
+    // The strongest form of the same statement: the corrected spans must
+    // equal what the identical glyph layout produces with no padding at all
+    // (6 timesteps, C == W). Padding a crop must not move its content.
+    auto unpadded = net.decodeForTest(ctcOutput({1, 1, 0, 2, 2, 2}, 7), 6, 7, 1.0f);
+    REQUIRE(unpadded.spans.size() == 2);
+    for (size_t i = 0; i < unpadded.spans.size(); i++) {
+        CHECK(corrected.spans[i].begin == doctest::Approx(unpadded.spans[i].begin));
+        CHECK(corrected.spans[i].end == doctest::Approx(unpadded.spans[i].end));
+    }
+
+    // The correction touches spans only; decoded text is unaffected.
+    CHECK(padded.text == "ab");
+    CHECK(corrected.text == "ab");
+}
+
+TEST_CASE("returnSpans: a repeat separated by a blank yields two distinct, ordered spans") {
+    // `a a # a a #` — the blank at timestep 2 breaks the CTC run, so this
+    // decodes to two separate 'a' tokens. Their spans must be disjoint and
+    // ordered, not one merged extent covering both: the run-tracking has to
+    // close a run when the argmax changes to blank, not only when it changes
+    // to another character.
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setReturnSpans(true);
+    auto output = ctcOutput({1, 1, 0, 1, 1, 0}, 7);
+    auto line = net.decodeForTest(output, 6, 7);
+
+    CHECK(line.text == "aa");
+    REQUIRE(line.tokens.size() == 2);
+    REQUIRE(line.spans.size() == 2);
+    CHECK(line.tokens[0] == "a");
+    CHECK(line.tokens[1] == "a");
+
+    CHECK(line.spans[0].begin == doctest::Approx(0.0f));
+    CHECK(line.spans[0].end == doctest::Approx(2.0f / 6.0f));
+    CHECK(line.spans[1].begin == doctest::Approx(3.0f / 6.0f));
+    CHECK(line.spans[1].end == doctest::Approx(5.0f / 6.0f));
+    // Strictly separated by the blank timestep between the two runs.
+    CHECK(line.spans[0].end < line.spans[1].begin);
+    CHECK(line.spans[0].begin != line.spans[1].begin);
+}
+
+TEST_CASE("returnSpans: multi-byte CJK tokens stay whole codepoints and index-aligned") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/cjk_keys.txt");
+    REQUIRE(net.keyCount() == 5); // 3 CJK chars + blank prefix + space suffix
+    net.setReturnSpans(true);
+    // keys = ["#", U+4E2D, U+6587, U+5B57, " "]  (indices 0..4)
+    // 6 timesteps: U+4E2D owns 0-1, blank, U+6587 at 3, blank, U+5B57 at 5.
+    auto output = ctcOutput({1, 1, 0, 2, 0, 3}, 5);
+    auto line = net.decodeForTest(output, 6, 5);
+
+    // Byte escapes rather than raw literals, so these assertions don't depend
+    // on how a given compiler interprets this source file's encoding.
+    const std::string kZhong = "\xE4\xB8\xAD"; // U+4E2D
+    const std::string kWen = "\xE6\x96\x87";   // U+6587
+    const std::string kZi = "\xE5\xAD\x97";    // U+5B57
+
+    REQUIRE(line.tokens.size() == 3);
+    CHECK(line.spans.size() == line.tokens.size());
+    CHECK(line.charScores.size() == line.tokens.size());
+
+    // Whole UTF-8 codepoints per token, never split into individual bytes.
+    CHECK(line.tokens[0] == kZhong);
+    CHECK(line.tokens[1] == kWen);
+    CHECK(line.tokens[2] == kZi);
+    for (const auto& t : line.tokens) {
+        CHECK(t.size() == 3);
+    }
+    CHECK(line.text == kZhong + kWen + kZi);
+
+    CHECK(line.spans[0].begin == doctest::Approx(0.0f));
+    CHECK(line.spans[0].end == doctest::Approx(2.0f / 6.0f));
+    CHECK(line.spans[1].begin == doctest::Approx(3.0f / 6.0f));
+    CHECK(line.spans[1].end == doctest::Approx(4.0f / 6.0f));
+    CHECK(line.spans[2].begin == doctest::Approx(5.0f / 6.0f));
+    CHECK(line.spans[2].end == doctest::Approx(1.0f)); // last run closes at the final timestep
+    for (size_t i = 1; i < line.spans.size(); i++) {
+        CHECK(line.spans[i - 1].end <= line.spans[i].begin);
+    }
+}
+
+TEST_CASE("returnSpans: injected gap spaces stay index-aligned with tokens and scores") {
+    // >= 4 tokens with one wide gap, so injectGapSpaces actually fires and
+    // has to splice a span in alongside the token and the score. Anything
+    // that inserts into two of the three vectors but not the third shows up
+    // here as a size mismatch, which would misalign every box after the gap.
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setReturnSpans(true);
+    // 20 timesteps: a@0, b@2, c@4, a wide blank valley, then d@12, e@14.
+    auto output = ctcOutput({1, 0, 2, 0, 3, 0, 0, 0, 0, 0,
+                             0, 0, 4, 0, 5, 0, 0, 0, 0, 0}, 7);
+    auto line = net.decodeForTest(output, 20, 7);
+
+    CHECK(line.text == "abc de");
+    REQUIRE(line.tokens.size() == 6); // 5 decoded + 1 injected space
+    CHECK(line.spans.size() == line.tokens.size());
+    CHECK(line.charScores.size() == line.tokens.size());
+    CHECK(line.tokens[3] == " "); // the injected token, at the gap
+
+    // Still ordered and inside [0,1] across the injection point.
+    for (size_t i = 0; i < line.spans.size(); i++) {
+        CHECK(line.spans[i].begin >= 0.0f);
+        CHECK(line.spans[i].end <= 1.0f);
+        CHECK(line.spans[i].begin <= line.spans[i].end);
+        if (i > 0) {
+            CHECK(line.spans[i - 1].begin <= line.spans[i].begin);
+        }
+    }
+}

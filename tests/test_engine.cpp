@@ -1,7 +1,12 @@
 // tests/test_engine.cpp
 #include <doctest/doctest.h>
 
+#include <cstdint>
 #include <filesystem>
+#include <string>
+#include <vector>
+
+#include <opencv2/imgcodecs.hpp>
 
 #include "arboOCR/engine.hpp"
 #include "arboOCR/recognizer.hpp"
@@ -20,6 +25,8 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.recBatchNum == 6);
     CHECK(cfg.useAngleCls == false);
     CHECK(cfg.useFp16 == true); // TensorRT FP16 default (was always-on)
+    CHECK(cfg.intraOpNumThreads == 0); // 0 = ORT decides
+    CHECK(cfg.interOpNumThreads == 0); // 0 = ORT decides
     CHECK(cfg.useClahe == false);
     CHECK(cfg.splitOvermerged == false);
     CHECK(cfg.minimumConfidence == doctest::Approx(0.5f));
@@ -35,6 +42,20 @@ TEST_CASE("EngineConfig path overrides default empty") {
     CHECK(cfg.clsModelPath.empty());
     CHECK(cfg.recModelPath.empty());
     CHECK(cfg.dictPath.empty());
+}
+
+TEST_CASE("EngineConfig thread counts are settable and survive a copy") {
+    EngineConfig cfg;
+    cfg.intraOpNumThreads = 2;
+    cfg.interOpNumThreads = 1;
+    CHECK(cfg.intraOpNumThreads == 2);
+    CHECK(cfg.interOpNumThreads == 1);
+
+    // Callers routinely pass the config around by value (Engine stores its
+    // own copy), so the knob has to travel with it.
+    EngineConfig copy = cfg;
+    CHECK(copy.intraOpNumThreads == 2);
+    CHECK(copy.interOpNumThreads == 1);
 }
 
 TEST_CASE("resolveModelPaths uses default flat layout under modelsDir") {
@@ -172,6 +193,75 @@ TEST_CASE("toJson with backend on empty page is valid object") {
     empty.image = "none.jpg";
     const std::string json = toJson(empty, std::string("cpu"));
     CHECK(json == "{\"backend\":\"cpu\",\"image\":\"none.jpg\",\"elapsedMs\":0,\"lines\":[]}");
+}
+
+// Engine::recognizeEncoded / recognizeEncodedAsync themselves need a
+// constructed Engine (i.e. real ONNX files — Ort::Session throws otherwise), so
+// they live in test_engine_inference.cpp territory. Everything new about them is
+// the decode step; past that they hand off to the same runPipeline as
+// recognize(const cv::Mat&). So test decodeImageBytes directly.
+
+TEST_CASE("decodeImageBytes round-trips a PNG-encoded mat") {
+    cv::Mat src(20, 30, CV_8UC3, cv::Scalar(10, 20, 30));
+    std::vector<uchar> png;
+    REQUIRE(cv::imencode(".png", src, png));
+    REQUIRE_FALSE(png.empty());
+
+    cv::Mat decoded = decodeImageBytes(png.data(), png.size());
+    REQUIRE_FALSE(decoded.empty());
+    CHECK(decoded.rows == 20);
+    CHECK(decoded.cols == 30);
+    CHECK(decoded.channels() == 3);
+    // PNG is lossless, so the pixels must survive the round trip exactly.
+    CHECK(decoded.at<cv::Vec3b>(5, 5)[0] == 10);
+    CHECK(decoded.at<cv::Vec3b>(5, 5)[1] == 20);
+    CHECK(decoded.at<cv::Vec3b>(5, 5)[2] == 30);
+}
+
+TEST_CASE("decodeImageBytes always yields 3-channel BGR (IMREAD_COLOR)") {
+    // A grayscale source must still come back as BGR — the pipeline downstream
+    // (detector/getRotateCropImage) assumes 3 channels like cv::imread does.
+    cv::Mat gray(8, 8, CV_8UC1, cv::Scalar(128));
+    std::vector<uchar> png;
+    REQUIRE(cv::imencode(".png", gray, png));
+
+    cv::Mat decoded = decodeImageBytes(png.data(), png.size());
+    REQUIRE_FALSE(decoded.empty());
+    CHECK(decoded.channels() == 3);
+}
+
+TEST_CASE("decodeImageBytes degrades to an empty mat instead of throwing") {
+    // cv::imdecode CV_Asserts on an empty buffer, so these paths must never
+    // reach it — an empty Mat is what recognizeEncoded turns into an
+    // empty-lines PagePrediction, preserving recognize()'s never-throws contract.
+    CHECK_NOTHROW(decodeImageBytes(nullptr, 0));
+    CHECK(decodeImageBytes(nullptr, 0).empty());
+
+    const std::vector<uint8_t> bytes(64, 0x41);
+    CHECK_NOTHROW(decodeImageBytes(bytes.data(), 0));
+    CHECK(decodeImageBytes(bytes.data(), 0).empty());
+
+    CHECK_NOTHROW(decodeImageBytes(nullptr, 64));
+    CHECK(decodeImageBytes(nullptr, 64).empty());
+
+    // Non-image bytes: no codec magic number matches.
+    const std::string garbage = "this is definitely not an image, not even close";
+    const auto* junk = reinterpret_cast<const uint8_t*>(garbage.data());
+    CHECK_NOTHROW(decodeImageBytes(junk, garbage.size()));
+    CHECK(decodeImageBytes(junk, garbage.size()).empty());
+}
+
+TEST_CASE("decodeImageBytes does not throw on a truncated image") {
+    // Valid PNG magic, payload cut off mid-stream: the codec is entered and may
+    // fail deep inside. Only the never-throws contract is asserted — whether a
+    // partial decode is salvaged is the codec's business, not ours.
+    cv::Mat src(12, 12, CV_8UC3, cv::Scalar(255, 0, 0));
+    std::vector<uchar> png;
+    REQUIRE(cv::imencode(".png", src, png));
+    REQUIRE(png.size() > 16);
+
+    CHECK_NOTHROW(decodeImageBytes(png.data(), png.size() / 3));
+    CHECK_NOTHROW(decodeImageBytes(png.data(), 8)); // magic number only
 }
 
 TEST_CASE("Recognizer setRecBatchNum clamps and reports") {

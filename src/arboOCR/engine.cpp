@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/imgcodecs.hpp>
@@ -49,6 +50,27 @@ Polygon cvPointsToPolygon(const std::vector<cv::Point>& box) {
 
 } // namespace
 
+cv::Mat decodeImageBytes(const uint8_t* data, size_t size) {
+    // cv::imdecode CV_Asserts (throws) on an empty buffer instead of returning
+    // an empty Mat, and the Mat header below takes an int column count — so
+    // null/empty/oversized inputs are screened here rather than by imdecode.
+    if (data == nullptr || size == 0
+        || size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return cv::Mat();
+    }
+    try {
+        // Non-owning 1xN byte view over the caller's buffer: no copy, and
+        // imdecode only reads it. const_cast is safe for the same reason.
+        const cv::Mat buf(1, static_cast<int>(size), CV_8UC1,
+                          const_cast<uint8_t*>(data));
+        return cv::imdecode(buf, cv::IMREAD_COLOR);
+    } catch (const std::exception&) {
+        // Truncated/malformed payloads can throw out of a codec rather than
+        // returning empty. Same degradation either way.
+        return cv::Mat();
+    }
+}
+
 ModelPaths resolveModelPaths(const EngineConfig& cfg) {
     fs::path modelsDir(cfg.modelsDir);
     ModelPaths out;
@@ -81,12 +103,16 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
 
     // Must be set before loadModel so TensorRT profiles match runtime batch size.
     recognizer_.setRecBatchNum(config.recBatchNum);
+    recognizer_.setReturnSpans(config.returnWordBoxes);
 
-    detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+    detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+        config.intraOpNumThreads, config.interOpNumThreads);
     if (config.useAngleCls) {
-        classifier_.loadModel(paths.cls, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+        classifier_.loadModel(paths.cls, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+            config.intraOpNumThreads, config.interOpNumThreads);
     }
-    recognizer_.loadModel(paths.rec, useCuda, useTensorrt, config.trtCacheDir, config.useFp16);
+    recognizer_.loadModel(paths.rec, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
+        config.intraOpNumThreads, config.interOpNumThreads);
 
     if (!recognizer_.loadKeysFromModelMetadata()) {
         log(LogLevel::Debug, "Recognizer keys: model metadata missing, loading " + paths.dict);
@@ -123,14 +149,24 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
 
         std::vector<cv::Mat> partImages;
         partImages.reserve(textBoxes.size());
-        for (auto& box : textBoxes) {
-            partImages.push_back(getRotateCropImage(prepped, box.boxPoint));
+        // Word boxes need to undo whatever getRotateCropImage/angle-cls did to
+        // the crop before a horizontal fraction of it means anything on the
+        // page: a tall box is read along the quad's vertical axis, and a
+        // 180-flipped crop is read backwards. Recording per box beats
+        // recomputing the conditions later, which would drift.
+        std::vector<char> wasTransposed(textBoxes.size(), 0);
+        std::vector<char> wasRotated180(textBoxes.size(), 0);
+        for (size_t i = 0; i < textBoxes.size(); i++) {
+            bool transposed = false;
+            partImages.push_back(getRotateCropImage(prepped, textBoxes[i].boxPoint, &transposed));
+            wasTransposed[i] = transposed ? 1 : 0;
         }
 
         auto angles = classifier_.getAngles(partImages, config_.useAngleCls, /*mostAngle=*/false);
         for (size_t i = 0; i < partImages.size(); i++) {
             if (angles[i].index == 1) {
                 partImages[i] = matRotateClockWise180(partImages[i]);
+                wasRotated180[i] = 1;
             }
         }
 
@@ -144,12 +180,24 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
             if (!keepByConfidence(text, recScore, config_.minimumConfidence)) {
                 continue;
             }
-            result.lines.push_back(LinePrediction{
+            LinePrediction line{
                 cvPointsToPolygon(textBoxes[i].boxPoint),
                 text,
                 recScore,
                 textBoxes[i].score,
-            });
+                {},
+            };
+            if (config_.returnWordBoxes && i < textLines.size()) {
+                line.words = groupTokensIntoWords(
+                    textLines[i].tokens, textLines[i].spans, textLines[i].charScores,
+                    line.polygon, wasTransposed[i] != 0, wasRotated180[i] != 0);
+                // The tokens predate refineDecodedText, which runs on the joined
+                // string and has no index map back. Applying the same rules per
+                // word keeps word text consistent with line text; splitting on
+                // spaces already absorbed the space-collapsing half.
+                for (auto& w : line.words) refineDecodedText(w.text);
+            }
+            result.lines.push_back(std::move(line));
         }
         sortLinesReadingOrder(result.lines);
         log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");
@@ -176,6 +224,15 @@ PagePrediction Engine::recognize(const cv::Mat& image) {
     return runPipeline(image, {});
 }
 
+PagePrediction Engine::recognizeEncoded(const uint8_t* data, size_t size) {
+    cv::Mat src = decodeImageBytes(data, size);
+    if (src.empty()) {
+        log(LogLevel::Warn, "recognize: failed to decode "
+            + std::to_string(size) + " encoded bytes");
+    }
+    return runPipeline(src, {});
+}
+
 std::future<PagePrediction> Engine::recognizeAsync(const std::string& imagePath) {
     return std::async(std::launch::async, [this, imagePath]() {
         return recognize(imagePath);
@@ -186,6 +243,20 @@ std::future<PagePrediction> Engine::recognizeAsync(const cv::Mat& image) {
     cv::Mat copy = image.clone();
     return std::async(std::launch::async, [this, copy = std::move(copy)]() {
         return recognize(copy);
+    });
+}
+
+std::future<PagePrediction> Engine::recognizeEncodedAsync(const uint8_t* data, size_t size) {
+    // Copy rather than capture the pointer: a raw pointer outliving its buffer
+    // is the classic async footgun, and encoded bytes are smaller than the mat
+    // the sync path decodes anyway — the Mat overload already clones for this
+    // exact reason. Guarded so a null pointer never forms an invalid range.
+    std::vector<uint8_t> buf;
+    if (data != nullptr && size > 0) {
+        buf.assign(data, data + size);
+    }
+    return std::async(std::launch::async, [this, buf = std::move(buf)]() {
+        return recognizeEncoded(buf.data(), buf.size());
     });
 }
 

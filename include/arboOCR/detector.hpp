@@ -25,9 +25,13 @@ public:
     /// Load the DBNet ONNX model. `useCuda` appends CUDA EP,
     /// `useTensorrt` appends TensorRT EP with profile shapes.
     /// `useFp16` enables TensorRT FP16 (ignored unless useTensorrt).
+    /// `intraOpNumThreads`/`interOpNumThreads` size the ORT thread pools;
+    /// 0 (the default) leaves the choice to ORT. See EngineConfig for when
+    /// setting them is worth it. Negative values are clamped to 0.
     void loadModel(const std::string& modelPath, bool useCuda = false,
                    bool useTensorrt = false, const std::string& trtCacheDir = "",
-                   bool useFp16 = true);
+                   bool useFp16 = true, int intraOpNumThreads = 0,
+                   int interOpNumThreads = 0);
 
     /// Run detection on `src` (already resized to `scale.dstWidth x
     /// scale.dstHeight` internally). Returns text boxes in `src`'s original

@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(arboOCR CXX)
+project(arboOCR VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(GNUInstallDirs)
 
 # Default (vcpkg): onnxruntime/OpenCV/CURL/doctest/cxxopts via CONFIG packages.
 # System-deps (-DARBOOCR_USE_SYSTEM_DEPS=ON): apt OpenCV/CURL + vendored
@@ -33,9 +35,13 @@ else()
     find_package(CURL CONFIG REQUIRED)
 endif()
 
-# Vendored Clipper (polygon offset for unClipBox).
+# Vendored Clipper (polygon offset for unClipBox). Exported alongside arboOCR
+# because a static library that links another static library leaves those
+# symbols unresolved for the consumer; clipper.hpp itself stays private
+# (no public arboOCR header includes it), so it gets no INSTALL_INTERFACE.
 add_library(arboocr_clipper STATIC vendor/rapidocronnx/clipper.cpp)
-target_include_directories(arboocr_clipper PUBLIC vendor/rapidocronnx)
+target_include_directories(arboocr_clipper PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vendor/rapidocronnx>)
 
 # Core library.
 add_library(arboOCR STATIC
@@ -46,16 +52,24 @@ add_library(arboOCR STATIC
     src/arboOCR/classifier.cpp
     src/arboOCR/recognizer.cpp
     src/arboOCR/engine.cpp
+    src/arboOCR/visualize.cpp
+    src/arboOCR/markdown.cpp
     src/arboOCR/model_downloader.cpp
     src/arboOCR/types.cpp
     src/arboOCR/logging.cpp
 )
-target_include_directories(arboOCR PUBLIC include ${OpenCV_INCLUDE_DIRS})
+target_include_directories(arboOCR PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    "$<BUILD_INTERFACE:${OpenCV_INCLUDE_DIRS}>")
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
+add_library(arboOCR::arboOCR ALIAS arboOCR)
 
 if(ARBOOCR_USE_SYSTEM_DEPS)
-    target_include_directories(arboOCR PUBLIC ${ARBOOCR_ORT_INCLUDE_DIR})
-    target_link_directories(arboOCR PUBLIC ${ARBOOCR_ORT_LIB_DIR})
+    # Vendored ORT paths live in the source tree, so they cannot be exported
+    # verbatim; arboOCRConfig.cmake re-applies them for installed consumers.
+    target_include_directories(arboOCR PUBLIC $<BUILD_INTERFACE:${ARBOOCR_ORT_INCLUDE_DIR}>)
+    target_link_directories(arboOCR PUBLIC $<BUILD_INTERFACE:${ARBOOCR_ORT_LIB_DIR}>)
     target_link_libraries(arboOCR PUBLIC onnxruntime)
     set_target_properties(arboOCR PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
@@ -72,7 +86,12 @@ else()
             PATH_SUFFIXES onnxruntime/core/session onnxruntime
         )
         if(ONNXRUNTIME_INCLUDE_DIR)
-            target_include_directories(arboOCR PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+            # BUILD_INTERFACE: under vcpkg this resolves inside the build tree
+            # (vcpkg_installed/), and install(EXPORT) hard-errors on interface
+            # paths there. Installed consumers get the header dir from
+            # find_dependency(onnxruntime) in arboOCRConfig.cmake instead.
+            target_include_directories(arboOCR PUBLIC
+                $<BUILD_INTERFACE:${ONNXRUNTIME_INCLUDE_DIR}>)
         endif()
     endif()
 endif()
@@ -88,6 +107,8 @@ add_executable(arboocr_tests
     tests/test_recognizer.cpp
     tests/test_engine.cpp
     tests/test_engine_inference.cpp
+    tests/test_visualize.cpp
+    tests/test_markdown.cpp
     tests/test_model_downloader.cpp
     tests/test_logging.cpp
 )
@@ -120,6 +141,52 @@ target_link_libraries(arboocr_demo PRIVATE arboOCR cxxopts::cxxopts)
 if(ARBOOCR_USE_SYSTEM_DEPS)
     set_target_properties(arboocr_demo PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
+endif()
+
+# Install + package export, so consumers can find_package(arboOCR CONFIG) and
+# link arboOCR::arboOCR instead of vendoring the tree. On by default only for a
+# standalone build (3.20 predates PROJECT_IS_TOP_LEVEL, hence the manual check).
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(ARBOOCR_INSTALL_DEFAULT ON)
+else()
+    set(ARBOOCR_INSTALL_DEFAULT OFF)
+endif()
+option(ARBOOCR_INSTALL "Generate install rules and the arboOCR CMake package" ${ARBOOCR_INSTALL_DEFAULT})
+
+if(ARBOOCR_INSTALL)
+    include(CMakePackageConfigHelpers)
+    set(ARBOOCR_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/arboOCR")
+
+    install(TARGETS arboOCR arboocr_clipper
+        EXPORT arboOCRTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    # The Go/Rust/PHP wrappers shell out to this binary. Tests and examples
+    # stay build-tree only.
+    install(TARGETS arboocr_demo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+    install(EXPORT arboOCRTargets
+        FILE arboOCRTargets.cmake
+        NAMESPACE arboOCR::
+        DESTINATION ${ARBOOCR_CMAKEDIR})
+
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/arboOCRConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/arboOCRConfig.cmake
+        INSTALL_DESTINATION ${ARBOOCR_CMAKEDIR})
+    # Pre-1.0: 0.1 and 0.2 are not interchangeable, so match on the minor too.
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/arboOCRConfigVersion.cmake
+        COMPATIBILITY SameMinorVersion)
+
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/arboOCRConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/arboOCRConfigVersion.cmake
+        DESTINATION ${ARBOOCR_CMAKEDIR})
 endif()
 
 # Buildable usage examples (see examples/README.md).

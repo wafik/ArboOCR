@@ -25,6 +25,14 @@ ScaleParam getScaleParam(const cv::Mat& src, int targetSize) {
     float ratio = (srcWidth > srcHeight)
         ? static_cast<float>(targetSize) / static_cast<float>(srcWidth)
         : static_cast<float>(targetSize) / static_cast<float>(srcHeight);
+    // RapidOCR's `Det.limit_type = max` semantic: targetSize is a CEILING on
+    // the long side, never a target to grow to. Upscaling a small image is
+    // pure waste — the detector pays full O(w*h) cost on interpolated pixels
+    // that carry no extra text detail — and arboOCR's default
+    // detLimitSideLen=960 was measured as a ceiling on receipts (1536
+    // over-merged, 960 recovered ~2 points), so growing past the source
+    // resolution runs the model outside the range it was tuned on.
+    ratio = std::min(ratio, 1.0f);
 
     dstWidth = static_cast<int>(static_cast<float>(srcWidth) * ratio);
     dstHeight = static_cast<int>(static_cast<float>(srcHeight) * ratio);
@@ -141,7 +149,12 @@ std::vector<float> substractMeanNormalize(const cv::Mat& src, const float* meanV
     return out;
 }
 
-cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box) {
+cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box, bool* wasTransposed) {
+    // Set up front so every early return below reports "not transposed"
+    // without each guard having to remember to.
+    if (wasTransposed) {
+        *wasTransposed = false;
+    }
     // Guards below exist because this is a public function custom pipelines
     // can call directly with arbitrary boxes (not just ones DBNet produced
     // and already clamped to image bounds) — a degenerate box here used to
@@ -202,6 +215,9 @@ cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box) {
         cv::Mat rotated(partImg.rows, partImg.cols, partImg.depth());
         cv::transpose(partImg, rotated);
         cv::flip(rotated, rotated, 0);
+        if (wasTransposed) {
+            *wasTransposed = true;
+        }
         return rotated;
     }
     return partImg;
@@ -223,6 +239,13 @@ cv::Point2f lerpPt(const cv::Point& a, const cv::Point& b, float t) {
         static_cast<float>(a.x) + t * static_cast<float>(b.x - a.x),
         static_cast<float>(a.y) + t * static_cast<float>(b.y - a.y),
     };
+}
+
+// Same operation on Polygon's point type (arbo::ocr::Point2f, not cv's) —
+// spanToPolygon walks the very same quad edges as maybeSplitOvermergedBox,
+// just on already-float page coordinates.
+Point2f lerpPt(const Point2f& a, const Point2f& b, float t) {
+    return {a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)};
 }
 
 std::vector<cv::Point> toCvPoints(const cv::Point2f* p, int n) {
@@ -377,11 +400,38 @@ void sortLinesReadingOrder(std::vector<LinePrediction>& lines) {
         const float n = static_cast<float>(poly.size());
         return std::pair<float, float>{x / n, y / n};
     };
+    // Same visual row if y within ~half a typical line. A fixed pixel tolerance
+    // is resolution-dependent — 12px is about half a line on a phone photo, a
+    // small fraction of one on a 300 DPI scan (rows fragment into single
+    // fields) and more than a whole line on a thumbnail (rows merge) — so
+    // derive it from the median polygon height instead. Half a median line
+    // height is the widest margin available on both sides: within a row,
+    // neighbouring fields jitter by well under half a line, while the next row
+    // sits at least a full line away. Scale-invariant by construction: the
+    // same page at 1x and 4x yields the same ordering.
+    constexpr float kRowTolFraction = 0.5f;
+    constexpr float kMinRowTol = 2.f; // floor for degenerate (zero-height) polygons
+    float yTol = kMinRowTol;
+    std::vector<float> heights;
+    heights.reserve(lines.size());
+    for (const auto& line : lines) {
+        if (line.polygon.empty()) continue;
+        float minY = line.polygon.front().y;
+        float maxY = minY;
+        for (const auto& pt : line.polygon) {
+            minY = std::min(minY, pt.y);
+            maxY = std::max(maxY, pt.y);
+        }
+        heights.push_back(maxY - minY);
+    }
+    if (!heights.empty()) {
+        std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+        yTol = std::max(kMinRowTol, kRowTolFraction * heights[heights.size() / 2]);
+    }
+
     std::stable_sort(lines.begin(), lines.end(), [&](const LinePrediction& a, const LinePrediction& b) {
         auto ca = centroid(a.polygon);
         auto cb = centroid(b.polygon);
-        // Same visual row if y within ~half a typical line — use 12px fallback.
-        const float yTol = 12.f;
         if (std::fabs(ca.second - cb.second) > yTol) {
             return ca.second < cb.second;
         }
@@ -472,9 +522,11 @@ bool hasLetterOrDigit(const std::string& s) {
 
 void injectGapSpaces(std::vector<std::string>& tokens,
                      std::vector<float>& positions,
-                     std::vector<float>* scores) {
+                     std::vector<float>* scores,
+                     std::vector<TokenSpan>* spans) {
     if (tokens.size() < 4 || positions.size() != tokens.size()) return;
     if (scores && scores->size() != tokens.size()) return;
+    if (spans && spans->size() != tokens.size()) return;
 
     std::vector<float> deltas;
     deltas.reserve(positions.size());
@@ -511,8 +563,149 @@ void injectGapSpaces(std::vector<std::string>& tokens,
                 const float sc = ((*scores)[i - 1] + (*scores)[i]) * 0.5f;
                 scores->insert(scores->begin() + static_cast<std::ptrdiff_t>(i), sc);
             }
+            if (spans) {
+                // The natural extent of an injected space is the gap it stands
+                // for: from where the left glyph ended to where the right one
+                // begins. Read the neighbours before inserting — the loop runs
+                // backwards precisely so indices below i stay valid. min/max
+                // because CTC spans of adjacent tokens can overlap by a hair,
+                // and TokenSpan documents begin <= end.
+                const float gapBegin = (*spans)[i - 1].end;
+                const float gapEnd = (*spans)[i].begin;
+                spans->insert(spans->begin() + static_cast<std::ptrdiff_t>(i),
+                              TokenSpan{std::min(gapBegin, gapEnd), std::max(gapBegin, gapEnd)});
+            }
         }
     }
+}
+
+Polygon spanToPolygon(const Polygon& lineQuad, TokenSpan span,
+                      bool wasTransposed, bool wasRotated180) {
+    if (lineQuad.size() != 4) {
+        return {}; // guard: not a quad, no reading axis to interpolate along
+    }
+
+    float begin = span.begin;
+    float end = span.end;
+    if (begin > end) std::swap(begin, end);
+    begin = clampValue(begin, 0.0f, 1.0f);
+    end = clampValue(end, 0.0f, 1.0f);
+
+    // Undoing the 180 flip is a change of variable on the fraction alone.
+    // matRotateClockWise180 is applied to the finished crop (engine.cpp), so
+    // final(r,c) == crop(R-1-r, C-1-c): the reading axis is reversed but it is
+    // still the *same* axis of the quad. Hence f -> 1-f, i.e. [b,e] -> [1-e,1-b],
+    // and this one substitution covers both the plain and the transposed case
+    // below — which is why the composition needs no extra branch.
+    if (wasRotated180) {
+        const float flippedBegin = 1.0f - end;
+        end = 1.0f - begin;
+        begin = flippedBegin;
+    }
+
+    // Interpolating along the quad's edges is EXACT here, not an approximation.
+    // getRotateCropImage warps the quad onto the crop rectangle, and that warp
+    // is affine along the reading axis iff the quad's top and bottom edges are
+    // parallel. They are: the quad is born a rectangle
+    // (cv::minAreaRect -> unClipBox -> cv::minAreaRect in detector.cpp) and the
+    // only thing applied afterwards is the anisotropic x/ratioWidth,
+    // y/ratioHeight rescale at detector.cpp:49-50 — an affine map, which
+    // preserves parallelism. So a lerp along the top and bottom edges lands
+    // exactly where the recognizer saw the token. The one residual is the
+    // integer truncation at detector.cpp:51-53 (<=1px per vertex, ~0.1-0.4px
+    // median); it is purely tangential — it slides a word box a fraction of a
+    // pixel along its own line, never off it.
+    const auto& p = lineQuad;
+
+    if (wasTransposed) {
+        // getRotateCropImage's tall-box branch does transpose + vertical flip,
+        // i.e. crop(r,c) == partImg(c, W-1-r) with partImg H rows x W cols.
+        // Read that off: the crop's left-to-right axis c is partImg's y, so the
+        // recognizer reads TOP-TO-BOTTOM down the quad and f is a fraction of
+        // the quad's height; a span therefore covers the quad's full width.
+        // (The crop's own vertical axis r maps to x = W-1-r, i.e. the crop's top
+        // row is the quad's right edge — irrelevant to the span, which spans all
+        // of x, but it is what makes the rotation 90 degrees CCW and not CW.)
+        // In the quad's frame the band's corners are (u,v) = (0,b) (1,b) (1,e)
+        // (0,e), which is TL,TR,BR,BL in page order because getMinBoxes already
+        // put p0 at the page top-left.
+        return {
+            lerpPt(p[0], p[3], begin), // left edge at begin
+            lerpPt(p[1], p[2], begin), // right edge at begin
+            lerpPt(p[1], p[2], end),
+            lerpPt(p[0], p[3], end),
+        };
+    }
+
+    // Base case: f runs left-to-right along the quad, exactly the operation
+    // maybeSplitOvermergedBox performs to cut a box in two.
+    return {
+        lerpPt(p[0], p[1], begin),
+        lerpPt(p[0], p[1], end),
+        lerpPt(p[3], p[2], end),
+        lerpPt(p[3], p[2], begin),
+    };
+}
+
+std::vector<WordBox> groupTokensIntoWords(const std::vector<std::string>& tokens,
+                                          const std::vector<TokenSpan>& spans,
+                                          const std::vector<float>& scores,
+                                          const Polygon& lineQuad,
+                                          bool wasTransposed,
+                                          bool wasRotated180) {
+    std::vector<WordBox> words;
+    if (tokens.size() != spans.size() || tokens.size() != scores.size()) {
+        return words; // guard: index-aligned or nothing — never read past the shortest
+    }
+    words.reserve(tokens.size() / 4 + 1);
+
+    std::string text;
+    TokenSpan span{};
+    float scoreSum = 0.0f;
+    size_t scoreCount = 0;
+
+    auto flush = [&]() {
+        if (scoreCount > 0 && !text.empty()) {
+            words.push_back(WordBox{
+                spanToPolygon(lineQuad, span, wasTransposed, wasRotated180),
+                text,
+                scoreSum / static_cast<float>(scoreCount),
+            });
+        }
+        text.clear();
+        scoreSum = 0.0f;
+        scoreCount = 0;
+    };
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        const std::string& tok = tokens[i];
+        if (tok.empty()) continue;
+        if (isSpaceToken(tok)) {
+            flush(); // the space ends the word and is not a word itself
+            continue;
+        }
+        if (hasCjk(tok)) {
+            // CJK is not space-delimited, so every character is its own word —
+            // same rule as RapidOCR's return_word_box. Reusing the whole-string
+            // hasCjk is fine on a single token: one token is one character.
+            flush();
+            words.push_back(WordBox{
+                spanToPolygon(lineQuad, spans[i], wasTransposed, wasRotated180),
+                tok,
+                scores[i],
+            });
+            continue;
+        }
+        if (scoreCount == 0) {
+            span.begin = spans[i].begin;
+        }
+        span.end = spans[i].end;
+        text += tok;
+        scoreSum += scores[i];
+        ++scoreCount;
+    }
+    flush();
+    return words;
 }
 
 void refineDecodedText(std::string& text) {

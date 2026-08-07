@@ -3,6 +3,8 @@
 // (detect -> crop -> angle -> recognize). Adapted from RapidAI/RapidOcrOnnx's
 // OcrLiteImpl::detect() pipeline — see THIRD_PARTY_NOTICES.md.
 
+#include <cstddef>
+#include <cstdint>
 #include <future>
 #include <string>
 #include <vector>
@@ -53,6 +55,19 @@ int detLimitSideLen = 960;
     // separate trtCacheDir or clearing the cache so engines are rebuilt.
     // INT8 is not supported (needs a calibration dataset).
     bool useFp16 = true;
+    // ONNXRuntime thread-pool sizes, applied to all three sessions
+    // (det/cls/rec). 0 means "let ORT decide", which in practice sizes the
+    // pools for the whole machine. That is right for a process that owns the
+    // box and wrong when it does not: N worker processes on one host each
+    // spawn a machine-sized pool and thrash, and a container's CPU quota is
+    // invisible to ORT. So this is a deployment knob (one worker per core,
+    // cgroup limits), not a performance win — RapidOCR exposes the same pair
+    // and states outright that bigger is not better, since the optimum is
+    // workload-dependent. Measure before changing; ORT's default is usually
+    // right for a process with the machine to itself. Negative values are
+    // clamped to 0.
+    int intraOpNumThreads = 0;  // 0 = ORT default
+    int interOpNumThreads = 0;  // 0 = ORT default
     // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the
     // full image before detection. Off by default (matches
     // useAngleCls/useCuda/useTensorrt) — helps low-contrast documents
@@ -69,6 +84,11 @@ int detLimitSideLen = 960;
     // drop_score / ppu minimumConfidence). Symbol-only text uses bar+0.3.
     // 0 disables filtering (legacy RapidOcrOnnx keeps every box).
     float minimumConfidence = 0.5f;
+    // Populate LinePrediction::words with a polygon per word (per character for
+    // CJK, which has no spaces to split on). Off by default: the spans it needs
+    // are nearly free to compute, but carrying them for every line of every page
+    // is not, and most callers only want line-level output.
+    bool returnWordBoxes = false;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
     // Optional absolute/relative paths. Empty = use modelsDir + default names
@@ -97,6 +117,15 @@ bool detectCuda();
 /// Auto-detect TensorRT execution provider availability via ONNXRuntime.
 bool detectTensorrt();
 
+/// Decode still-encoded image bytes (PNG/JPEG/... as they arrived over the
+/// wire) into a BGR mat. Never throws: null data, zero size and undecodable
+/// bytes all yield an empty Mat, mirroring how cv::imread reports an unreadable
+/// path. cv::imdecode itself CV_Asserts on an empty buffer rather than
+/// returning empty, so the guards below are load-bearing, not defensive noise.
+/// Free function (not an Engine detail) so this contract stays unit-testable —
+/// constructing an Engine needs real ONNX files on disk.
+cv::Mat decodeImageBytes(const uint8_t* data, size_t size);
+
 class Engine {
 public:
     explicit Engine(const EngineConfig& config);
@@ -117,14 +146,30 @@ public:
     /// `page.image` is left empty (no filename). The mat is not modified.
     PagePrediction recognize(const cv::Mat& image);
 
+    /// Same pipeline again, but on *encoded* bytes (a PNG/JPEG upload, an FFI
+    /// buffer, a socket read) — decoded via cv::imdecode instead of forcing
+    /// callers to spill a temp file just to hand us bytes they already hold.
+    /// Named recognizeEncoded rather than a recognize() overload because a
+    /// bytes overload sitting next to recognize(const cv::Mat&) reads as
+    /// "raw pixels" to every caller who skims it. Pointer + size is the
+    /// primitive that binds to std::vector, std::string, std::span and foreign
+    /// buffers with no copy at the boundary. Never throws: null data, zero size
+    /// and garbage bytes all degrade to an empty-lines PagePrediction with
+    /// elapsedMs set, exactly like an unreadable path.
+    /// `page.image` is left empty — a byte buffer has no filename, and the Mat
+    /// overload already emits `"image":""` for the same reason.
+    PagePrediction recognizeEncoded(const uint8_t* data, size_t size);
+
     /// Non-blocking wrappers around recognize(). Each call launches work on
     /// a background thread and returns a future. Not safe to call
     /// concurrently on the same Engine instance (ONNXRuntime sessions are
     /// not shared-session concurrent) — use one outstanding async call at a
-    /// time, or one Engine per worker. The Mat overload clones the image so
-    /// the caller may free/reuse their buffer immediately.
+    /// time, or one Engine per worker. The Mat overload clones the image and
+    /// the encoded overload copies the byte buffer, so the caller may
+    /// free/reuse their buffer immediately.
     std::future<PagePrediction> recognizeAsync(const std::string& imagePath);
     std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
+    std::future<PagePrediction> recognizeEncodedAsync(const uint8_t* data, size_t size);
 
 private:
     PagePrediction runPipeline(const cv::Mat& src, const std::string& imageName);

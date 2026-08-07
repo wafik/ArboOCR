@@ -46,10 +46,12 @@ try:
         LinePrediction,
         PagePrediction,
         Point2f,
+        WordBox,
         detect_cuda,
         detect_tensorrt,
         resolve_model_paths,
         to_json,
+        to_markdown,
     )
 except ImportError as e:  # pragma: no cover
     raise ImportError(
@@ -66,10 +68,12 @@ __all__ = [
     "LinePrediction",
     "PagePrediction",
     "Point2f",
+    "WordBox",
     "detect_cuda",
     "detect_tensorrt",
     "resolve_model_paths",
     "to_json",
+    "to_markdown",
 ]
 
 __version__ = "0.1.0"

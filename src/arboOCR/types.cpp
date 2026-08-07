@@ -56,6 +56,25 @@ void appendPolygon(std::ostringstream& os, const Polygon& poly, bool pretty, int
     }
 }
 
+// "words" is emitted only when non-empty, so the JSON shape is unchanged for
+// callers that never set returnWordBoxes — existing wrappers parse this.
+void appendWords(std::ostringstream& os, const std::vector<WordBox>& words,
+                 bool pretty, int indent) {
+    const std::string pad(static_cast<size_t>(indent), ' ');
+    const std::string padIn(static_cast<size_t>(indent + 2), ' ');
+    os << "[";
+    for (size_t i = 0; i < words.size(); i++) {
+        if (i) os << ",";
+        if (pretty) os << "\n" << padIn;
+        os << "{\"text\":\"" << escapeJson(words[i].text) << "\",\"score\":"
+           << words[i].score << ",\"polygon\":";
+        appendPolygon(os, words[i].polygon, false, 0);
+        os << "}";
+    }
+    if (pretty && !words.empty()) os << "\n" << pad;
+    os << "]";
+}
+
 void appendLine(std::ostringstream& os, const LinePrediction& line, bool pretty, int indent) {
     const std::string pad(static_cast<size_t>(indent), ' ');
     const std::string padIn(static_cast<size_t>(indent + 2), ' ');
@@ -66,11 +85,19 @@ void appendLine(std::ostringstream& os, const LinePrediction& line, bool pretty,
            << padIn << "\"detScore\":" << line.detScore << ",\n"
            << padIn << "\"polygon\":";
         appendPolygon(os, line.polygon, true, indent + 2);
+        if (!line.words.empty()) {
+            os << ",\n" << padIn << "\"words\":";
+            appendWords(os, line.words, true, indent + 2);
+        }
         os << "\n" << pad << "}";
     } else {
         os << "{\"text\":\"" << escapeJson(line.text) << "\",\"score\":" << line.score
            << ",\"detScore\":" << line.detScore << ",\"polygon\":";
         appendPolygon(os, line.polygon, false, 0);
+        if (!line.words.empty()) {
+            os << ",\"words\":";
+            appendWords(os, line.words, false, 0);
+        }
         os << "}";
     }
 }

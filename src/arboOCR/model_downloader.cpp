@@ -62,6 +62,25 @@ DownloadResult downloadFile(const std::string& url, const std::string& destPath)
     return {true, "", bytes};
 }
 
+std::vector<std::string> ocrModelFileNames(
+    const std::string& ocrVersion, const std::string& modelType
+) {
+    std::string recStem = ocrVersion + "_rec_" + modelType;
+    return {
+        ocrVersion + "_det.onnx",
+        ocrVersion + "_cls.onnx",
+        recStem + ".onnx",
+        recStem + "_dict.txt",
+    };
+}
+
+// The dict is downloaded alongside the three ONNX files because
+// resolveModelPaths() expects it, but it is legitimately optional: a rec model
+// that embeds its charset in the ONNX "character" metadata key never needs one,
+// and such repos do not host a dict at all. Rather than introduce a second
+// result type for "failed but that's fine", the dict keeps the same
+// DownloadResult shape and just carries an errorMessage saying the failure may
+// be ignorable — the caller still sees ok=false and is not lied to.
 std::vector<DownloadResult> downloadOcrModels(
     const std::string& baseUrl, const std::string& ocrVersion,
     const std::string& modelType, const std::string& modelsDir
@@ -70,15 +89,14 @@ std::vector<DownloadResult> downloadOcrModels(
     std::string base = baseUrl;
     if (!base.empty() && base.back() != '/') base.push_back('/');
 
-    std::vector<std::pair<std::string, std::string>> files = {
-        {base + ocrVersion + "_det.onnx", (dir / (ocrVersion + "_det.onnx")).string()},
-        {base + ocrVersion + "_cls.onnx", (dir / (ocrVersion + "_cls.onnx")).string()},
-        {base + ocrVersion + "_rec_" + modelType + ".onnx", (dir / (ocrVersion + "_rec_" + modelType + ".onnx")).string()},
-    };
-
     std::vector<DownloadResult> results;
-    for (auto& [url, dest] : files) {
-        results.push_back(downloadFile(url, dest));
+    for (auto& name : ocrModelFileNames(ocrVersion, modelType)) {
+        results.push_back(downloadFile(base + name, (dir / name).string()));
+    }
+    if (!results.back().ok) {
+        results.back().errorMessage +=
+            " (optional: the dict is only needed when the rec model does not"
+            " embed its charset in the ONNX \"character\" metadata key)";
     }
     return results;
 }
