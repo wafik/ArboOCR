@@ -10,6 +10,7 @@
 
 #include "arboOCR/engine.hpp"
 #include "arboOCR/markdown.hpp"
+#include "arboOCR/model_downloader.hpp"
 #include "arboOCR/types.hpp"
 
 namespace py = pybind11;
@@ -155,6 +156,8 @@ PYBIND11_MODULE(_arboocr, m) {
         .def_readwrite("return_word_boxes", &EngineConfig::returnWordBoxes)
         .def_readwrite("trt_cache_dir", &EngineConfig::trtCacheDir)
         .def_readwrite("models_dir", &EngineConfig::modelsDir)
+        .def_readwrite("auto_download", &EngineConfig::autoDownload)
+        .def_readwrite("models_base_url", &EngineConfig::modelsBaseUrl)
         .def_readwrite("det_model_path", &EngineConfig::detModelPath)
         .def_readwrite("cls_model_path", &EngineConfig::clsModelPath)
         .def_readwrite("rec_model_path", &EngineConfig::recModelPath)
@@ -190,6 +193,21 @@ PYBIND11_MODULE(_arboocr, m) {
     m.def("resolve_model_paths",
           [](const EngineConfig& cfg) { return modelPathsToDict(resolveModelPaths(cfg)); },
           py::arg("config"));
+
+    m.def("ensure_ocr_models",
+          [](const EngineConfig& cfg) { return modelPathsToDict(ensureOcrModels(cfg)); },
+          py::arg("config"),
+          "resolve_model_paths(), then fetch whatever is missing — what Engine\n"
+          "construction does for you. Call it directly to prefetch (a Docker\n"
+          "layer, a CI job) or to see which paths a config would really use.\n"
+          "An explicitly set *_model_path is never replaced by a download.\n"
+          "Never raises: anything unfetchable keeps its resolved-but-missing\n"
+          "path, so Engine() reports the same error it otherwise would.");
+
+    m.def("default_models_cache_dir", &defaultModelsCacheDir,
+          "Where auto-downloaded weights are cached, tag-scoped.");
+    m.def("default_models_base_url", &defaultModelsBaseUrl);
+    m.def("default_models_tag", &defaultModelsTag);
 
     m.def("detect_cuda", &detectCuda);
     m.def("detect_tensorrt", &detectTensorrt);

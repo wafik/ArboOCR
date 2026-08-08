@@ -1,5 +1,6 @@
 // cli/arboocr_demo.cpp — minimal arboOCR quickstart: recognize one image, or a
 // whole list of them against a single loaded Engine (--images-from).
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <istream>
@@ -14,6 +15,7 @@
 #include "arboOCR/engine.hpp"
 #include "arboOCR/logging.hpp"
 #include "arboOCR/markdown.hpp"
+#include "arboOCR/model_downloader.hpp"
 #include "arboOCR/visualize.hpp"
 
 namespace {
@@ -60,6 +62,12 @@ int main(int argc, char* argv[]) {
         ("ocr-version", "OCR model version", cxxopts::value<std::string>()->default_value("PP-OCRv6"))
         ("model-type", "Recognizer size — tiny/small/medium (default small; detector is always the same file unless --det-model)",
             cxxopts::value<std::string>()->default_value("small"))
+        ("no-download", "Never fetch missing models; fail instead (same as ARBOOCR_OFFLINE=1)",
+            cxxopts::value<bool>()->default_value("false"))
+        ("models-url", "Directory URL to fetch missing models from (default: the pinned arboOCR models release)",
+            cxxopts::value<std::string>()->default_value(""))
+        ("download-models", "Fetch the models for --ocr-version/--model-type into the cache and exit",
+            cxxopts::value<bool>()->default_value("false"))
         // Detection tuning (accuracy knobs — see EngineConfig in engine.hpp).
         ("det-limit-side-len", "Longest image side for detection resize",
             cxxopts::value<int>()->default_value("960"))
@@ -121,7 +129,10 @@ int main(int argc, char* argv[]) {
         std::cout << opts.help() << "\n" << kExitCodesHelp << std::endl;
         return 0;
     }
-    if (!result.count("image") && !batchMode) {
+    // --download-models is a prefetch mode: it fetches and exits, so requiring
+    // an image to name a file it will never open would be nonsense.
+    const bool prefetchOnly = result["download-models"].as<bool>();
+    if (!result.count("image") && !batchMode && !prefetchOnly) {
         std::cout << opts.help() << "\n" << kExitCodesHelp << std::endl;
         return 1;
     }
@@ -189,6 +200,34 @@ int main(int argc, char* argv[]) {
     cfg.clsModelPath = result["cls-model"].as<std::string>();
     cfg.recModelPath = result["rec-model"].as<std::string>();
     cfg.dictPath = result["dict"].as<std::string>();
+    cfg.autoDownload = !result["no-download"].as<bool>();
+    cfg.modelsBaseUrl = result["models-url"].as<std::string>();
+
+    // Prefetch-and-exit: warms the cache in CI or a Docker build layer so the
+    // first real run does not pay for ~22 MB mid-request.
+    if (prefetchOnly) {
+        if (!cfg.autoDownload) {
+            std::cerr << "arboocr_demo: --download-models and --no-download contradict"
+                      << std::endl;
+            return 1;
+        }
+        const arbo::ocr::ModelPaths paths = arbo::ocr::ensureOcrModels(cfg);
+        const std::string labels[4] = {"det ", "cls ", "rec ", "dict"};
+        const std::string resolved[4] = {paths.det, paths.cls, paths.rec, paths.dict};
+        for (int i = 0; i < 4; ++i) {
+            // cls is only fetched with --angle, and the dict is often embedded
+            // in the rec ONNX — neither absence is a failure, so say "skipped"
+            // rather than "missing" and keep "missing" meaning something wrong.
+            const char* state = std::filesystem::exists(resolved[i]) ? "ok     "
+                              : (i == 1 && !cfg.useAngleCls)         ? "skipped"
+                              : (i == 3)                            ? "absent "
+                                                                    : "MISSING";
+            std::cout << state << "  " << labels[i] << "  " << resolved[i] << "\n";
+        }
+        const bool haveRequired = std::filesystem::exists(paths.det)
+                               && std::filesystem::exists(paths.rec);
+        return haveRequired ? 0 : 2;
+    }
 
     const bool jsonMode = result["json"].as<bool>();
 
@@ -229,8 +268,12 @@ int main(int argc, char* argv[]) {
                   << "  rec:  " << paths.rec << "\n"
                   << "  dict: " << paths.dict << "\n"
                   << "Check --models-dir/--ocr-version/--model-type, or override the"
-                     " paths with --det-model/--cls-model/--rec-model/--dict."
-                  << std::endl;
+                     " paths with --det-model/--cls-model/--rec-model/--dict.\n"
+                  << (cfg.autoDownload
+                          ? "Auto-download was on, so the fetch failed too — rerun with"
+                            " --log-level warn to see why.\n"
+                          : "Auto-download is off (--no-download / ARBOOCR_OFFLINE).\n")
+                  << "Cache dir: " << arbo::ocr::defaultModelsCacheDir() << std::endl;
         return 2;
     }
 

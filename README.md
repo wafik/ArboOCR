@@ -131,6 +131,18 @@ Lines: 31 (402.053 ms)
   ...
 ```
 
+Missing model files are downloaded on first run (see [Models](#models)).
+The flags and environment variables that control that:
+
+| Flag / env var | Effect |
+|---|---|
+| `--download-models` | Prefetch the models and exit — prints `ok` / `skipped` / `absent` / `MISSING` per file; exit 0 when det+rec are present, else 2 |
+| `--no-download` | Never touch the network; use only what's already on disk |
+| `--models-url <url>` | Fetch from your own mirror instead of the pinned default release |
+| `ARBOOCR_OFFLINE=1` | Same as `--no-download`, process-wide |
+| `ARBOOCR_MODELS_URL` | Default base URL override |
+| `ARBOOCR_CACHE_DIR` | Override the per-user model cache directory |
+
 More usage patterns — including driving `Detector`/`Classifier`/`Recognizer`
 directly instead of the `Engine` facade — are in
 [`examples/`](examples/), as small buildable programs you can run
@@ -208,7 +220,9 @@ selected at runtime.
 
 ## Models
 
-arboOCR needs PP-OCRv6 ONNX files in `modelsDir`:
+arboOCR runs on PP-OCRv6 ONNX files. By default it fetches them for you on
+first use; if you'd rather supply your own, this is the layout it expects in
+`modelsDir`:
 
 ```
 models/
@@ -218,27 +232,85 @@ models/
 └── PP-OCRv6_rec_medium_dict.txt     character dict (only if not embedded in ONNX metadata)
 ```
 
-**Two ways to get them:**
+**Three ways to get them:**
 
 <details>
-<summary><b>Option A — copy from an existing install</b></summary>
+<summary><b>Option A — do nothing (default: auto-download)</b></summary>
 
-If you already have a Python `rapidocr` install, copy its `models/`
-directory into `modelsDir`, renaming files to match the layout above.
+Construct an `Engine` with an empty `modelsDir` and arboOCR fetches what it
+needs from its own pinned release, verifies each file against a SHA-256
+compiled into the binary, and caches it per-user:
+
+| Platform | Cache location |
+|---|---|
+| Windows | `%LOCALAPPDATA%\arboOCR\models\models-v1` |
+| macOS | `~/Library/Caches/arboOCR/models/models-v1` |
+| Linux | `$XDG_CACHE_HOME/arboOCR/models/models-v1`, else `~/.cache/arboOCR/models/models-v1` |
+
+The cache path carries the release tag, so a future `models-v2` can never
+reuse a `models-v1` file. Writes are atomic: the download lands on a sibling
+`.<pid>.tmp` path, gets hashed, and is only renamed onto the destination
+once the hash matches — a killed process or a truncated transfer can never
+leave a half-written model behind, and a cached file that no longer matches
+its pinned hash is re-fetched rather than trusted.
+
+Prefetch and exit — for CI, Docker image builds, or staging an air-gapped
+box:
+
+```bash
+./arboocr_demo --download-models --models-dir models
+```
+
+Turn it off with `cfg.autoDownload = false`, `--no-download`, or
+`ARBOOCR_OFFLINE=1`.
 
 </details>
 
 <details>
-<summary><b>Option B — download programmatically</b></summary>
+<summary><b>Option B — copy from an existing install</b></summary>
+
+If you already have a Python `rapidocr` install, copy its `models/`
+directory into `modelsDir`, renaming files to match the layout above. A
+populated `modelsDir` short-circuits the download — no network traffic.
+
+</details>
+
+<details>
+<summary><b>Option C — your own mirror, or fine-tuned weights</b></summary>
 
 ```cpp
+// Point the auto-download at your own host:
+cfg.modelsBaseUrl = "https://your-host.example/models/PP-OCRv6/";
+
+// Or fetch explicitly, without constructing an Engine ("" baseUrl = the default release):
 arbo::ocr::downloadOcrModels(
-    "https://your-host.example/models/PP-OCRv6/", // baseUrl — you supply this
+    "https://your-host.example/models/PP-OCRv6/",
     "PP-OCRv6", "medium", "models");
 ```
 
-arboOCR ships **no default download URL** — PP-OCR model hosting locations
-aren't stable across mirrors, so the caller picks the source.
+This section used to say arboOCR ships **no default download URL**, because
+"PP-OCR model hosting locations aren't stable across mirrors, so the caller
+picks the source." That is no longer true, and the reason it changed is
+worth stating rather than quietly deleting.
+
+The objection was really three objections: a hardcoded URL rots, you don't
+control the integrity of what comes back, and you don't control its
+provenance. A default download is only defensible once all three are
+answered. They now are — the URL resolves to an immutable pinned release tag
+(`models-v1`), every file is checked against a SHA-256 baked into the
+binary, and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) records where
+the weights came from.
+
+The escape hatch is unchanged, and it still wins. Precedence, per file:
+
+1. An explicitly set `detModelPath` / `clsModelPath` / `recModelPath` /
+   `dictPath` is returned as-is and is **never** substituted by a download —
+   a fine-tuned model is never silently swapped for a stock one.
+2. An existing non-empty file under `modelsDir`.
+3. Only then, the download.
+
+`downloadOcrModels` looks up the pinned hash by file name, so a custom
+mirror serving the stock names still gets integrity checking.
 
 </details>
 
@@ -290,8 +362,17 @@ cfg.dictPath = "models/custom_dict.txt"; // only if ONNX metadata has no charact
 ```
 
 Helpers: `resolveModelPaths(cfg)` returns the four resolved paths without
-checking that files exist. Custom downloads: use `downloadFile(url, dest)`
-into those paths; `downloadOcrModels` still writes the default flat names only.
+checking that files exist — it is pure and never touches the network.
+`ensureOcrModels(cfg)` is what `Engine`'s constructor actually calls: the
+same four paths, but anything missing is downloaded and hash-verified first,
+and explicitly set paths are always returned untouched.
+
+```cpp
+ModelPaths ensureOcrModels(const EngineConfig& cfg);
+```
+
+Custom downloads: use `downloadFile(url, dest, expectedSha256)` into those
+paths; `downloadOcrModels` still writes the default flat names only.
 
 ### Low-contrast documents (CLAHE)
 
@@ -410,6 +491,8 @@ struct EngineConfig {
     std::string clsModelPath;   // empty = modelsDir/ocrVersion_cls.onnx
     std::string recModelPath;   // empty = modelsDir/ocrVersion_rec_modelType.onnx
     std::string dictPath;       // empty = modelsDir/ocrVersion_rec_modelType_dict.txt
+    bool        autoDownload = true; // fetch missing models on construction (ARBOOCR_OFFLINE=1 disables)
+    std::string modelsBaseUrl;  // empty = defaultModelsBaseUrl() (pinned release)
 };
 
 class Engine {
@@ -422,7 +505,8 @@ public:
     std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
 };
 
-ModelPaths resolveModelPaths(const EngineConfig& cfg);
+ModelPaths resolveModelPaths(const EngineConfig& cfg); // pure — no filesystem, no network
+ModelPaths ensureOcrModels(const EngineConfig& cfg);   // resolves, then downloads what's missing
 ```
 
 `recognize()` never throws — a missing/unreadable image or an inference
@@ -486,11 +570,34 @@ lives, not just here.
 ### Model downloader
 
 ```cpp
-DownloadResult downloadFile(const std::string& url, const std::string& destPath);
+const char* defaultModelsTag();       // "models-v1" — pinned, immutable
+std::string defaultModelsBaseUrl();   // the release assets that tag points at
+std::string defaultModelsCacheDir();  // per-user, tag-scoped (ARBOOCR_CACHE_DIR overrides)
+
+std::string sha256File(const std::string& path);
+std::string knownSha256(const std::string& fileName); // "" if that name isn't pinned
+
+DownloadResult downloadFile(const std::string& url, const std::string& destPath,
+                            const std::string& expectedSha256 = "");
 std::vector<DownloadResult> downloadOcrModels(
     const std::string& baseUrl, const std::string& ocrVersion,
     const std::string& modelType, const std::string& modelsDir);
 ```
+
+With an `expectedSha256`, `downloadFile` writes to a sibling `.<pid>.tmp`,
+hashes it, and only then renames it onto `destPath` — atomic, and replacing
+an existing file on both POSIX and Win32. An already-present destination is
+re-hashed and re-fetched if it doesn't match, so a truncated cache heals
+itself. With an empty `expectedSha256` the old behaviour is unchanged: an
+existing non-empty file is left alone.
+
+`downloadOcrModels` uses `defaultModelsBaseUrl()` when `baseUrl` is empty,
+and looks up `knownSha256(name)` per file either way — a custom mirror
+serving the stock file names still gets integrity checking.
+
+SHA-256 is vendored in `model_downloader.cpp` (~70 lines, tested against the
+NIST vectors including the 56-byte padding boundary). It is deliberately
+**not** OpenSSL: no new dependency, `vcpkg.json` unchanged.
 
 ## Benchmarks
 
