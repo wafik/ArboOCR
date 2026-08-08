@@ -1,6 +1,7 @@
 #include "arboOCR/engine.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 
@@ -8,6 +9,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "arboOCR/logging.hpp"
+#include "arboOCR/model_downloader.hpp"
 #include "arboOCR/ocr_utils.hpp"
 #include "arboOCR/preprocess.hpp"
 
@@ -89,6 +91,53 @@ ModelPaths resolveModelPaths(const EngineConfig& cfg) {
     return out;
 }
 
+ModelPaths ensureOcrModels(const EngineConfig& cfg) {
+    ModelPaths paths = resolveModelPaths(cfg);
+
+    const char* offline = std::getenv("ARBOOCR_OFFLINE");
+    if (!cfg.autoDownload || (offline && *offline && std::string(offline) != "0")) {
+        return paths;
+    }
+
+    // Same order as ocrModelFileNames(): det, cls, rec, dict.
+    const std::vector<std::string> names = ocrModelFileNames(cfg.ocrVersion, cfg.modelType);
+    std::string* const slots[4] = {&paths.det, &paths.cls, &paths.rec, &paths.dict};
+    const bool wanted[4] = {true, cfg.useAngleCls, true, true};
+    const bool overridden[4] = {
+        !cfg.detModelPath.empty(), !cfg.clsModelPath.empty(),
+        !cfg.recModelPath.empty(), !cfg.dictPath.empty()};
+
+    const fs::path cacheDir(defaultModelsCacheDir());
+    std::string baseUrl = cfg.modelsBaseUrl.empty() ? defaultModelsBaseUrl() : cfg.modelsBaseUrl;
+    if (!baseUrl.empty() && baseUrl.back() != '/') baseUrl.push_back('/');
+
+    for (int i = 0; i < 4; ++i) {
+        if (!wanted[i] || overridden[i]) continue;
+        std::error_code ec;
+        if (fs::exists(*slots[i], ec) && fs::file_size(*slots[i], ec) > 0) continue;
+
+        const std::string dest = (cacheDir / names[i]).string();
+        // downloadFile re-hashes an existing destination rather than trusting
+        // it, so a cache hit still costs a read. That is deliberate — a file
+        // that rotted on disk after it was written would otherwise be mmap'd
+        // straight into ONNX Runtime — and it is cheap next to building the
+        // ORT session we are about to build anyway.
+        const bool cached = fs::exists(dest, ec) && fs::file_size(dest, ec) > 0;
+        log(LogLevel::Info, (cached ? "Verifying cached " : "Fetching ")
+            + names[i] + " -> " + dest);
+        const DownloadResult r = downloadFile(baseUrl + names[i], dest, knownSha256(names[i]));
+        if (r.ok) {
+            *slots[i] = dest;
+        } else {
+            // The dict is routinely absent by design; the rest is a real
+            // problem, but loadModel reports it better than we can here.
+            log(i == 3 ? LogLevel::Debug : LogLevel::Warn,
+                "Could not fetch " + names[i] + ": " + r.errorMessage);
+        }
+    }
+    return paths;
+}
+
 Engine::Engine(const EngineConfig& config) : config_(config) {
     bool useTensorrt = config.useTensorrt && detectTensorrt();
     bool useCuda = (config.useCuda || useTensorrt) && detectCuda();
@@ -96,7 +145,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     log(LogLevel::Info, "Engine backend: " + backend_
         + (useTensorrt ? (config.useFp16 ? " (fp16)" : " (fp32)") : ""));
 
-    ModelPaths paths = resolveModelPaths(config);
+    ModelPaths paths = ensureOcrModels(config);
     log(LogLevel::Debug,
         "Model paths det=" + paths.det + " cls=" + paths.cls
         + " rec=" + paths.rec + " dict=" + paths.dict);

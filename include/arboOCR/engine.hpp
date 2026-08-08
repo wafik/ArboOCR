@@ -91,6 +91,17 @@ int detLimitSideLen = 960;
     bool returnWordBoxes = false;
     std::string trtCacheDir = "models/trt_engines";
     std::string modelsDir = "models";
+    // Fetch missing stock weights on Engine construction instead of throwing.
+    // See ensureOcrModels() for exactly what this does and does not touch —
+    // notably, a path you set explicitly below is never substituted. Set false
+    // (or export ARBOOCR_OFFLINE=1) to forbid the process from touching the
+    // network; a missing model is then the hard failure it used to be.
+    bool autoDownload = true;
+    // Directory URL to fetch from. Empty = defaultModelsBaseUrl(), which is
+    // pinned to a release tag and checksum-verified. Point this at an internal
+    // mirror or artifact store to keep the download inside your network;
+    // stock file names are still verified against the built-in manifest.
+    std::string modelsBaseUrl;
     // Optional absolute/relative paths. Empty = use modelsDir + default names
     // (see resolveModelPaths). Use these for custom/fine-tuned ONNX or dicts;
     // PP-OCRv6 default models are already multi-language (no language field).
@@ -110,6 +121,27 @@ struct ModelPaths {
 /// Resolve det/cls/rec/dict paths from config defaults and optional overrides.
 /// Does not check that files exist. Pure / side-effect free.
 ModelPaths resolveModelPaths(const EngineConfig& cfg);
+
+/// resolveModelPaths(), then fetch whatever is missing — the network-touching
+/// counterpart, called for you by the Engine constructor when
+/// `cfg.autoDownload` is set.
+///
+/// Per file, in order of precedence:
+///   1. An explicitly set `cfg.*ModelPath` / `cfg.dictPath` is returned as-is,
+///      always. A custom or fine-tuned model is never silently replaced by a
+///      stock download just because the path is wrong.
+///   2. An existing non-empty file under `cfg.modelsDir` wins — a populated
+///      models directory means no network access at all.
+///   3. Otherwise the stock file is downloaded from `cfg.modelsBaseUrl` (or
+///      `defaultModelsBaseUrl()`) into `defaultModelsCacheDir()`, verified
+///      against the built-in SHA-256 manifest, and that cache path is
+///      returned.
+///
+/// `cls` is only considered when `cfg.useAngleCls` is set, and a dict failure
+/// is non-fatal (the charset is often embedded in the rec ONNX). Never throws:
+/// anything that cannot be fetched keeps its resolved-but-missing path, so the
+/// caller gets the same model-load error it would have got anyway.
+ModelPaths ensureOcrModels(const EngineConfig& cfg);
 
 /// Auto-detect CUDA execution provider availability via ONNXRuntime.
 bool detectCuda();

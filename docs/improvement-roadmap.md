@@ -15,7 +15,7 @@ date above. This document is a checklist, not a promise of ordering.
 |---|---|---|---|---|
 | 1 | Disable ORT CPU memory arena | High — 5.6 GB RSS on Jetson | S | **done** (`8c01bcb`) |
 | 2 | Stop upscaling small images in `getScaleParam` | High — wasted detector cost | S | **done** (`8c01bcb`) |
-| 3 | `downloadOcrModels` never fetches `_dict.txt` | High — documented path is broken | S | **done** (`8c01bcb`) |
+| 3 | `downloadOcrModels` never fetches `_dict.txt` | High — documented path is broken | S | **done** (`8c01bcb`); checksums **done**, progress callback open |
 | 4 | `Engine(cfg)` crashes the CLI on a bad model | High — first call every user makes | S | **done** (`8c01bcb`) |
 | 5 | No byte-buffer (encoded-bytes) input | Medium — temp file per web request | S | **done** (`37107b3`) |
 | 6 | One image per process spawn | Medium — 200 model loads for 200 pages | M | **done** (`HEAD`) |
@@ -30,10 +30,12 @@ date above. This document is a checklist, not a promise of ordering.
 
 Effort: **S** = under a day, **M** = a few days, **L** = a week or more.
 
-Thirteen of fourteen are done. The only one left is **#14**, the
+Thirteen of fourteen are done. The only whole item left is **#14**, the
 TensorRT/FP16 validation — a risk rather than a gap, since `useFp16 = true`
 ships as the default and nothing exercises it. The dev machine has no CUDA
-(AMD RX 6600), so #14 runs on the Jetson on **2026-08-10**.
+(AMD RX 6600), so #14 runs on the Jetson on **2026-08-10**. One loose end
+sits inside an otherwise-closed item: #3's progress callback was never
+implemented, though the dictionary fetch and the SHA-256 verification were.
 
 ---
 
@@ -123,12 +125,12 @@ resolves a fourth path, `<ocrVersion>_rec_<modelType>_dict.txt` (`:64-66`), and
 `Engine`'s constructor falls back to it whenever the ONNX carries no `character`
 metadata (`src/arboOCR/engine.cpp:91-99`).
 
-So README "Option B — download programmatically" (`README.md:231-243`) produces a
-models directory that is unusable unless the ONNX happens to embed its character
-list. When it doesn't, the engine logs `Recognizer has no character dictionary
-loaded` and every recognition comes back empty.
+So the README's programmatic-download option (now "Option C", `README.md:278-315`)
+produced a models directory that is unusable unless the ONNX happens to embed its
+character list. When it doesn't, the engine logs `Recognizer has no character
+dictionary loaded` and every recognition comes back empty.
 
-There is also no checksum verification and no progress callback anywhere in
+There was also no checksum verification and no progress callback anywhere in
 `model_downloader.cpp`. RapidOCR pins a SHA256 per model in its
 `default_models.yaml` for exactly this reason.
 
@@ -136,6 +138,22 @@ There is also no checksum verification and no progress callback anywhere in
 (some ONNX genuinely carry metadata) but surface it in the `DownloadResult`. Add
 an optional expected-SHA256 argument and a progress callback while the signature
 is being touched anyway.
+
+**Status — done, except the progress callback.** The dictionary entry shipped in
+`8c01bcb`. Integrity shipped separately: `downloadFile` now takes an optional
+`expectedSha256`, `knownSha256(fileName)` carries a pinned hash per stock file
+name, and `downloadOcrModels` looks one up per file so even a custom mirror gets
+verified. The hash is computed with a vendored SHA-256 (~70 lines in
+`model_downloader.cpp`, NIST vectors tested) rather than OpenSSL, so no new
+dependency. Verification is enforced by writing to a sibling `.<pid>.tmp` and
+renaming onto the destination only after the hash matches, which also makes the
+write atomic; an existing destination whose hash no longer matches is re-fetched.
+
+**The progress callback was not implemented and remains open.** A multi-megabyte
+recognizer downloaded on first `Engine` construction is exactly the case where a
+caller wants to render a progress bar or a log line, and there is currently no
+way to observe it — `downloadFile` returns only after the transfer completes. The
+CURL write callback is already the natural hook; this stays a small diff.
 
 ### 4. `Engine(cfg)` throws uncaught and takes the CLI down with it
 
@@ -340,7 +358,7 @@ cause is undiagnosed. Mobile detection models and **all** recognition models wer
 unaffected — v5 rec server moved 0.8161 → 0.8129, i.e. noise.
 
 arboOCR ships a single non-server detector (`PP-OCRv6_det.onnx`, no size
-variants — `README.md:247-249`), so it is probably in the safe class. "Probably"
+variants — `README.md:318-320`), so it is probably in the safe class. "Probably"
 is doing real work in that sentence, and there is currently **no test covering the
 TensorRT path or the FP16 flag at all**: `tests/test_engine.cpp:22` asserts the
 default is `true` and `:165-166` checks that the string `"tensorrt"` survives JSON
