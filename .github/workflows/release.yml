@@ -40,10 +40,41 @@ jobs:
           $out = "package/arboocr-windows-x64"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           Copy-Item "build/windows-x64/Release/arboocr_demo.exe" $out
-          Copy-Item "build/windows-x64/Release/*.dll" $out
+          # Was Copy-Item "*.dll", which shipped eleven OpenCV modules nothing
+          # ever loads (dnn, calib3d, objdetect, ... — 12.1 MB). The script
+          # resolves the real dependency closure and adds the ORT provider
+          # DLLs, which are dlopen'd and so appear in no import table.
+          cmake "-DBIN=build/windows-x64/Release/arboocr_demo.exe" "-DOUT_DIR=$out" `
+                "-DSEARCH_DIRS=build/windows-x64/Release" -P cmake/package_runtime.cmake
           Copy-Item "LICENSE" $out
           Copy-Item "THIRD_PARTY_NOTICES.md" $out
           Compress-Archive -Path "$out/*" -DestinationPath "arboocr-windows-x64.zip"
+        shell: pwsh
+
+      # A trimmed package that cannot run is worse than a fat one that can.
+      # Run the packaged binary from its own directory, so it resolves only
+      # the DLLs actually shipped, across the features that pull in different
+      # libraries: imgcodecs (--draw), imgproc (--clahe), the cls model
+      # (--angle), and libcurl + the download path (--download-models).
+      - name: Verify package runs
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = (Resolve-Path "package/arboocr-windows-x64").Path
+          $img = (Resolve-Path "tests/fixtures/test_images/INDONESIAN_RECEIPT_ZZ_2025041400001.jpg").Path
+          $env:ARBOOCR_CACHE_DIR = Join-Path $env:RUNNER_TEMP "arbo-verify"
+          Push-Location $out
+          & ./arboocr_demo.exe --download-models --model-type tiny
+          if ($LASTEXITCODE -ne 0) { throw "prefetch failed ($LASTEXITCODE)" }
+          foreach ($a in @(
+              @("--image", $img, "--model-type", "tiny", "--json"),
+              @("--image", $img, "--model-type", "tiny", "--draw", "o.png", "--word-boxes"),
+              @("--image", $img, "--model-type", "tiny", "--clahe"),
+              @("--image", $img, "--model-type", "tiny", "--angle"))) {
+            & ./arboocr_demo.exe @a --models-dir (Join-Path $env:ARBOOCR_CACHE_DIR "models-v1") > $null
+            if ($LASTEXITCODE -ne 0) { throw "failed ($LASTEXITCODE): $($a -join ' ')" }
+          }
+          Pop-Location
+          "Package verified: $([math]::Round((Get-Item arboocr-windows-x64.zip).Length/1MB,2)) MB zip"
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
@@ -127,18 +158,38 @@ jobs:
           mkdir -p "$out"
           bin="build/linux-x64/arboocr_demo"
           cp "$bin" "$out/"
-          # Bundle every shared lib the binary resolves outside system dirs
-          # (vcpkg-built onnxruntime/opencv/curl and their deps), and point
-          # the binary at them via a relative RPATH so it's self-contained.
-          # grep exits 1 on zero matches (e.g. everything is statically
-          # linked except system libs) — with pipefail that would abort the
-          # whole step even though "nothing extra to bundle" isn't an error.
-          ldd "$bin" | awk '{print $3}' | grep -E '^/' | grep -v -E '^/lib|^/usr/lib' | while read -r lib; do
-            cp -L "$lib" "$out/"
-          done || true
+          # Shares the resolver with the Windows job instead of a second
+          # ldd|awk|grep pipeline. Same closure as before, minus the pipefail
+          # footgun, plus the ORT provider .so files — those are dlopen'd, so
+          # ldd never listed them and a GPU package silently lacked them.
+          cmake -DBIN="$bin" -DOUT_DIR="$out" \
+                -DSEARCH_DIRS="build/linux-x64;build/linux-x64/vcpkg_installed/x64-linux/lib" \
+                -P cmake/package_runtime.cmake
           cp LICENSE THIRD_PARTY_NOTICES.md "$out/"
+          # Relative RPATH so the bundled libs are found next to the binary.
           patchelf --set-rpath '$ORIGIN' "$out/arboocr_demo" || true
           tar czf arboocr-linux-x64.tar.gz -C package arboocr-linux-x64
+
+      # See the Windows job: a trimmed package that cannot run is worse than a
+      # fat one that can. Runs from the extracted tarball, not the build tree,
+      # so anything the resolver missed fails here rather than for a user.
+      - name: Verify package runs
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/verify"
+          mkdir -p "$work" && tar xzf arboocr-linux-x64.tar.gz -C "$work"
+          img="$PWD/tests/fixtures/test_images/INDONESIAN_RECEIPT_ZZ_2025041400001.jpg"
+          export ARBOOCR_CACHE_DIR="$RUNNER_TEMP/arbo-verify"
+          cd "$work/arboocr-linux-x64"
+          ldd ./arboocr_demo | grep -E 'not found' && { echo "unresolved libs"; exit 1; } || true
+          ./arboocr_demo --download-models --model-type tiny
+          models="$ARBOOCR_CACHE_DIR/models-v1"
+          ./arboocr_demo --image "$img" --model-type tiny --models-dir "$models" --json > /dev/null
+          ./arboocr_demo --image "$img" --model-type tiny --models-dir "$models" --draw o.png --word-boxes > /dev/null
+          ./arboocr_demo --image "$img" --model-type tiny --models-dir "$models" --clahe > /dev/null
+          ./arboocr_demo --image "$img" --model-type tiny --models-dir "$models" --angle > /dev/null
+          cd - > /dev/null
+          echo "Package verified: $(du -h arboocr-linux-x64.tar.gz | cut -f1) tarball"
 
       - uses: actions/upload-artifact@v4
         with:
