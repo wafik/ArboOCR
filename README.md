@@ -371,6 +371,11 @@ and explicitly set paths are always returned untouched.
 ModelPaths ensureOcrModels(const EngineConfig& cfg);
 ```
 
+`modelDownloadsAllowed(cfg)` is the single answer to "may this config touch
+the network?" — `cfg.autoDownload` **and** `ARBOOCR_OFFLINE` unset (or `0`).
+`ensureOcrModels` gates on it; call it rather than reading `cfg.autoDownload`
+if you report on downloading in your own error messages.
+
 Custom downloads: use `downloadFile(url, dest, expectedSha256)` into those
 paths; `downloadOcrModels` still writes the default flat names only.
 
@@ -505,8 +510,9 @@ public:
     std::future<PagePrediction> recognizeAsync(const cv::Mat& image);
 };
 
-ModelPaths resolveModelPaths(const EngineConfig& cfg); // pure — no filesystem, no network
-ModelPaths ensureOcrModels(const EngineConfig& cfg);   // resolves, then downloads what's missing
+ModelPaths resolveModelPaths(const EngineConfig& cfg);   // pure — no filesystem, no network
+ModelPaths ensureOcrModels(const EngineConfig& cfg);     // resolves, then downloads what's missing
+bool modelDownloadsAllowed(const EngineConfig& cfg);     // cfg.autoDownload AND not ARBOOCR_OFFLINE
 ```
 
 `recognize()` never throws — a missing/unreadable image or an inference

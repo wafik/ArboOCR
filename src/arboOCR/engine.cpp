@@ -91,11 +91,19 @@ ModelPaths resolveModelPaths(const EngineConfig& cfg) {
     return out;
 }
 
+bool modelDownloadsAllowed(const EngineConfig& cfg) {
+    if (!cfg.autoDownload) return false;
+    const char* offline = std::getenv("ARBOOCR_OFFLINE");
+    // Set-and-non-empty and not "0" engages offline mode. Unset, empty, and
+    // "0" all mean "not engaged" — "0" especially, so a wrapper script that
+    // exports ARBOOCR_OFFLINE=0 to *disable* offline mode is believed.
+    return !(offline && *offline && std::string(offline) != "0");
+}
+
 ModelPaths ensureOcrModels(const EngineConfig& cfg) {
     ModelPaths paths = resolveModelPaths(cfg);
 
-    const char* offline = std::getenv("ARBOOCR_OFFLINE");
-    if (!cfg.autoDownload || (offline && *offline && std::string(offline) != "0")) {
+    if (!modelDownloadsAllowed(cfg)) {
         return paths;
     }
 

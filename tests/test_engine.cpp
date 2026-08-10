@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -100,6 +101,69 @@ TEST_CASE("resolveModelPaths all overrides win") {
     CHECK(p.cls == "b/cls.onnx");
     CHECK(p.rec == "c/rec.onnx");
     CHECK(p.dict == "d/dict.txt");
+}
+
+namespace {
+
+// Portable set/unset of ARBOOCR_OFFLINE. A null `value` means "unset":
+// _putenv_s(name, "") *deletes* the variable on Windows (there is no
+// unsetenv), so the empty string is the natural spelling of unset there and
+// the helper never has to fake an empty-but-present variable.
+void setOfflineEnv(const char* value) {
+#ifdef _WIN32
+    _putenv_s("ARBOOCR_OFFLINE", value ? value : "");
+#else
+    if (value) ::setenv("ARBOOCR_OFFLINE", value, 1);
+    else ::unsetenv("ARBOOCR_OFFLINE");
+#endif
+}
+
+} // namespace
+
+TEST_CASE("modelDownloadsAllowed reads the flag and ARBOOCR_OFFLINE together") {
+    const char* saved = std::getenv("ARBOOCR_OFFLINE");
+    // Empty is folded into unset: the two are indistinguishable on Windows and
+    // modelDownloadsAllowed() treats them the same anyway, so the restore at
+    // the end round-trips on every platform.
+    const bool hadVar = saved != nullptr && *saved != '\0';
+    const std::string savedValue = hadVar ? std::string(saved) : std::string();
+
+    EngineConfig cfg;
+    REQUIRE(cfg.autoDownload); // the default this case is written against
+
+    setOfflineEnv(nullptr);
+    CHECK(modelDownloadsAllowed(cfg) == true);
+
+    // --no-download / cfg.autoDownload = false forbids it on its own...
+    cfg.autoDownload = false;
+    CHECK(modelDownloadsAllowed(cfg) == false);
+    // ...and wins outright: no environment value can put it back on the network.
+    setOfflineEnv("0");
+    CHECK(modelDownloadsAllowed(cfg) == false);
+    setOfflineEnv("1");
+    CHECK(modelDownloadsAllowed(cfg) == false);
+
+    cfg.autoDownload = true;
+    setOfflineEnv("1");
+    CHECK(modelDownloadsAllowed(cfg) == false);
+
+    // Set-but-"0" is an explicit "stay online", NOT offline. This pins the
+    // exact semantics ensureOcrModels() has always had — anything looser would
+    // silently take the network away from a wrapper that exports
+    // ARBOOCR_OFFLINE=0 to disable offline mode.
+    setOfflineEnv("0");
+    CHECK(modelDownloadsAllowed(cfg) == true);
+
+    // Any other non-empty value engages it, same as "1".
+    setOfflineEnv("true");
+    CHECK(modelDownloadsAllowed(cfg) == false);
+
+    // doctest runs every case in one process and CI runs this binary with
+    // ARBOOCR_OFFLINE=1, so leaking a value here would corrupt other cases.
+    setOfflineEnv(hadVar ? savedValue.c_str() : nullptr);
+    const char* restored = std::getenv("ARBOOCR_OFFLINE");
+    CHECK(hadVar == (restored != nullptr && *restored != '\0'));
+    if (hadVar) CHECK(savedValue == std::string(restored ? restored : ""));
 }
 
 TEST_CASE("LinePrediction and PagePrediction default-construct cleanly") {
