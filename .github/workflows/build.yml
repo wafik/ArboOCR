@@ -2,8 +2,20 @@ name: Build & Test
 on:
   push:
     branches: [main, master]
+    # Docs-only commits can't break the build. No branch protection requires
+    # this check today; if that changes, drop paths-ignore from pull_request —
+    # a skipped required check blocks the merge instead of passing it.
+    paths-ignore: ['docs/**', 'scripts/**', '**/*.md']
   pull_request:
     branches: [main, master]
+    paths-ignore: ['docs/**', 'scripts/**', '**/*.md']
+
+# One run per branch/PR. Without this, merging a PR leaves its in-flight run
+# racing the push run for main — which is how a 1.5 GB cache restore got
+# cancelled mid-extract. Releases are never cancelled; release.yml has no group.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-linux:
@@ -11,8 +23,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. WAJIB: Kosongkan disk (agar build OpenCV tidak gagal karena storage Ubuntu penuh)
+      # Restore FIRST so the disk-cleanup step below can be skipped on a hit.
+      # split restore/save because save-always is deprecated, and because
+      # cancel-in-progress means we want the save to run even when cancelled.
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          restore-keys: |
+            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-linux-x64-
+
+      # 1. Kosongkan disk agar build OpenCV tidak gagal karena storage penuh.
+      # Only needed when vcpkg has to build from source. On an exact cache hit
+      # nothing is compiled, and this step costs ~2m33s — longer than the whole
+      # Windows job. A restore-keys partial hit reports cache-hit=false, so a
+      # stale cache still gets the disk space it needs.
       - name: Free Disk Space (Ubuntu)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -42,7 +72,7 @@ jobs:
 
       # 3. Setup vcpkg. Its built-in "x-gha" binary caching backend has been
       # removed upstream (silently no-ops every run, confirmed in logs), so
-      # cache vcpkg_installed explicitly below instead — same key scheme as
+      # vcpkg_installed is cached explicitly above instead — same key scheme as
       # release.yml, so a cache warmed by either workflow benefits the other.
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -50,35 +80,49 @@ jobs:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
           vcpkgJsonGlob: '**/vcpkg.json'
 
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
-          restore-keys: |
-            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-linux-x64-
-          save-always: true
-
-      # 4. Configure & Install Dependencies via vcpkg
+      # 4. Configure & install dependencies via vcpkg
       - name: Configure
         run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
-        
-      # 5. OPTIMASI: Hapus sampah kompilasi untuk menghemat space sebelum build aplikasi utama Anda
+
+      # 5. Hapus sampah kompilasi untuk menghemat space sebelum build utama
       - name: Clean vcpkg buildtrees
         run: rm -rf build/linux-x64/vcpkg_installed/*/buildtrees/* || true
 
       - name: Build
         run: cmake --build build/linux-x64 --config Release -j$(nproc)
-        
+
       - name: Test
         run: ctest --test-dir build/linux-x64 -C Release --output-on-failure
 
+      # Verify the install/export actually produces a usable package. Windows
+      # covers this locally; Linux is where the vcpkg include paths differ.
+      - name: Verify install
+        run: |
+          cmake --install build/linux-x64 --prefix "$RUNNER_TEMP/arboocr-prefix"
+          test -f "$RUNNER_TEMP/arboocr-prefix/lib/cmake/arboOCR/arboOCRConfig.cmake"
+          test -f "$RUNNER_TEMP/arboocr-prefix/include/arboOCR/engine.hpp"
+
+      - name: Save vcpkg cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
   build-windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+
+      - name: Restore vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          restore-keys: |
+            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-x64-
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -86,24 +130,21 @@ jobs:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
           vcpkgJsonGlob: '**/vcpkg.json'
 
-      - name: Cache vcpkg packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
-          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
-          restore-keys: |
-            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-windows-x64-
-          save-always: true
-
       - name: Configure
         run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
-        
+
       - name: Clean vcpkg buildtrees (Windows)
         run: Remove-Item -Recurse -Force build\windows-x64\vcpkg_installed\*\buildtrees\* -ErrorAction SilentlyContinue
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
-        
+
       - name: Test
         run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
+
+      - name: Save vcpkg cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
