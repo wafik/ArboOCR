@@ -122,9 +122,23 @@ struct ModelPaths {
 /// Does not check that files exist. Pure / side-effect free.
 ModelPaths resolveModelPaths(const EngineConfig& cfg);
 
+/// Is this config allowed to touch the network for missing stock models?
+/// True when `cfg.autoDownload` is set AND the process-wide `ARBOOCR_OFFLINE`
+/// escape hatch is not engaged — engaged meaning the variable is set to a
+/// non-empty value other than "0", so `ARBOOCR_OFFLINE=0` reads as an explicit
+/// "stay online" rather than as offline.
+///
+/// The two inputs are answered here and only here. `ensureOcrModels()` gates
+/// on this, and so must anything that *reports* on downloading (a CLI's
+/// model-load diagnostic, say) — asking `cfg.autoDownload` directly gets the
+/// flag but not the environment, and says the wrong thing to the user.
+/// Reads the environment on every call rather than caching, so a process that
+/// sets the variable late still sees it.
+bool modelDownloadsAllowed(const EngineConfig& cfg);
+
 /// resolveModelPaths(), then fetch whatever is missing — the network-touching
 /// counterpart, called for you by the Engine constructor when
-/// `cfg.autoDownload` is set.
+/// modelDownloadsAllowed() says so.
 ///
 /// Per file, in order of precedence:
 ///   1. An explicitly set `cfg.*ModelPath` / `cfg.dictPath` is returned as-is,

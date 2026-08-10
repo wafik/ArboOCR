@@ -269,7 +269,11 @@ int main(int argc, char* argv[]) {
                   << "  dict: " << paths.dict << "\n"
                   << "Check --models-dir/--ocr-version/--model-type, or override the"
                      " paths with --det-model/--cls-model/--rec-model/--dict.\n"
-                  << (cfg.autoDownload
+                  // Ask the library, not cfg.autoDownload: ARBOOCR_OFFLINE also
+                  // suppresses the fetch, and a hint that blames a failed
+                  // download sends the user hunting a network fault that never
+                  // happened.
+                  << (arbo::ocr::modelDownloadsAllowed(cfg)
                           ? "Auto-download was on, so the fetch failed too — rerun with"
                             " --log-level warn to see why.\n"
                           : "Auto-download is off (--no-download / ARBOOCR_OFFLINE).\n")
