@@ -23,7 +23,7 @@ if(ARBOOCR_USE_SYSTEM_DEPS)
     if(NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE Release)
     endif()
-    find_package(OpenCV REQUIRED)
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
     find_package(CURL REQUIRED)
     if(ARBOOCR_ORT_LIB_DIR STREQUAL "" OR NOT EXISTS "${ARBOOCR_ORT_LIB_DIR}")
         message(FATAL_ERROR "ARBOOCR_USE_SYSTEM_DEPS=ON needs libonnxruntime.so in ${ARBOOCR_ORT_LIB_DIR} "
@@ -31,7 +31,7 @@ if(ARBOOCR_USE_SYSTEM_DEPS)
     endif()
 else()
     find_package(onnxruntime CONFIG REQUIRED)
-    find_package(OpenCV CONFIG REQUIRED)
+    find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
     find_package(CURL CONFIG REQUIRED)
 endif()
 
@@ -62,6 +62,12 @@ target_include_directories(arboOCR PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     "$<BUILD_INTERFACE:${OpenCV_INCLUDE_DIRS}>")
+# OpenCV_LIBS is now exactly the three components requested above, not every
+# module OpenCV happens to have built. vcpkg.json turns the rest off at the
+# source: arboOCR includes only opencv2/core, opencv2/imgproc and
+# opencv2/imgcodecs, so dnn/calib3d/highgui/gapi/... were build time nobody
+# spent usefully. Adding a new opencv2/<module> include means adding the
+# component here and the feature in vcpkg.json — the build fails first.
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
 add_library(arboOCR::arboOCR ALIAS arboOCR)
 

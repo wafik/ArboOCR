@@ -57,15 +57,33 @@ endforeach()
 # table and the resolver above cannot see them. Without these, a package looks
 # fine on CPU and then fails to find CUDA/TensorRT at runtime — exactly the
 # regression an import-driven allowlist invites. Copy them by name.
+#
+# They are NOT reliably next to the binary: vcpkg's applocal deployment only
+# copies what the import table names, so the providers stay in
+# vcpkg_installed/<triplet>/bin. Callers must pass that directory in
+# SEARCH_DIRS too, and a build that ships none is treated as a mistake rather
+# than silently accepted.
+set(provider_count 0)
 foreach(dir IN LISTS SEARCH_DIRS)
     file(GLOB providers
         "${dir}/onnxruntime_providers_*.dll"
         "${dir}/libonnxruntime_providers_*.so")
     foreach(p IN LISTS providers)
-        file(COPY "${p}" DESTINATION "${OUT_DIR}")
-        list(APPEND copied "${p}")
+        get_filename_component(pname "${p}" NAME)
+        if(NOT EXISTS "${OUT_DIR}/${pname}")
+            file(COPY "${p}" DESTINATION "${OUT_DIR}")
+            list(APPEND copied "${p}")
+            math(EXPR provider_count "${provider_count} + 1")
+        endif()
     endforeach()
 endforeach()
+if(provider_count EQUAL 0)
+    message(FATAL_ERROR
+        "package_runtime: found no onnxruntime_providers_* in SEARCH_DIRS "
+        "(${SEARCH_DIRS}). They live in vcpkg_installed/<triplet>/bin, not "
+        "next to the binary — pass that directory too. Shipping without them "
+        "produces a package that works on CPU and cannot find CUDA/TensorRT.")
+endif()
 
 if(unresolved)
     # Not fatal: system libraries legitimately resolve outside our search

@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "dependencies": [
     "onnxruntime",
-    "opencv",
+    {
+      "name": "opencv4",
+      "default-features": false,
+      "features": ["fs", "intrinsics", "jpeg", "png", "thread", "tiff", "webp"]
+    },
     "curl",
     "doctest",
     "cxxopts"
