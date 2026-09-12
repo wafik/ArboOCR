@@ -68,6 +68,11 @@ int detLimitSideLen = 960;
     // clamped to 0.
     int intraOpNumThreads = 0;  // 0 = ORT default
     int interOpNumThreads = 0;  // 0 = ORT default
+    // Leave ORT's CPU memory arena enabled. false (default, current shipped
+    // behavior): DisableCpuMemArena, bounded RSS (~135 MB on SROIE small) at
+    // ~+17.6% engine latency (docs/improvement-roadmap.md item 1). true: ORT
+    // default arena ON, faster, higher high-water RSS — matches oar-ocr.
+    bool enableCpuMemArena = false;
     // Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to the
     // full image before detection. Off by default (matches
     // useAngleCls/useCuda/useTensorrt) — helps low-contrast documents

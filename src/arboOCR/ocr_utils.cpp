@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib> // std::abs(int) for the fast-path predicate below
 #include <numeric>
 #include <utility>
 
@@ -165,26 +166,58 @@ cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box, bool*
         return {};
     }
 
-    cv::Mat image;
-    src.copyTo(image);
     std::vector<cv::Point> points = box;
-
     int collectX[4] = {box[0].x, box[1].x, box[2].x, box[3].x};
     int collectY[4] = {box[0].y, box[1].y, box[2].y, box[3].y};
-    int left = clampValue(*std::min_element(collectX, collectX + 4), 0, image.cols - 1);
-    int right = clampValue(*std::max_element(collectX, collectX + 4), 0, image.cols - 1);
-    int top = clampValue(*std::min_element(collectY, collectY + 4), 0, image.rows - 1);
-    int bottom = clampValue(*std::max_element(collectY, collectY + 4), 0, image.rows - 1);
+
+    // ROI-first: submat view + copyTo of only the clamped bounding box —
+    // callers pass this once per detected box against the full page, and a
+    // per-box full-image copy dominated cost for small boxes (oar-ocr crops
+    // the ROI up front for the same reason).
+    int left = clampValue(*std::min_element(collectX, collectX + 4), 0, src.cols - 1);
+    int right = clampValue(*std::max_element(collectX, collectX + 4), 0, src.cols - 1);
+    int top = clampValue(*std::min_element(collectY, collectY + 4), 0, src.rows - 1);
+    int bottom = clampValue(*std::max_element(collectY, collectY + 4), 0, src.rows - 1);
     if (right <= left || bottom <= top) {
         return {}; // guard: degenerate/zero-area box after clamping to image bounds
     }
 
     cv::Mat imgCrop;
-    image(cv::Rect(left, top, right - left, bottom - top)).copyTo(imgCrop);
+    src(cv::Rect(left, top, right - left, bottom - top)).copyTo(imgCrop);
+    const int cropWidth = right - left;
+    const int cropHeight = bottom - top;
 
     for (auto& point : points) {
         point.x -= left;
         point.y -= top;
+    }
+
+    // Near-axis-aligned fast path with 2px Chebyshev tolerance per corner.
+    // A strict equality could never fire here: boxes arrive as DBNet floats,
+    // pass through unClipBox (Clipper jtRound) and minAreaRect (a small
+    // non-zero angle), then get truncated to int in detector.cpp findRsBoxes
+    // (static_cast<int> on the un-scaled coords) — so the quad is consistently
+    // 1-2px skewed against its own clamped ROI bbox, never exactly on it.
+    // Safe: the fast path crops the ROI instead of warping, so output differs
+    // from the warp by at most those ~2px of edge; the recognizer tolerates a
+    // small translation, and genuinely skewed boxes miss the predicate and
+    // still take the perspective path below (clipped boxes keep too — their
+    // clamped corner coordinate is not the box extent).
+    auto nearPt = [](const cv::Point& p, int x, int y) {
+        return std::abs(p.x - x) <= 2 && std::abs(p.y - y) <= 2;
+    };
+    if (nearPt(points[0], 0, 0) && nearPt(points[1], cropWidth, 0) &&
+        nearPt(points[2], cropWidth, cropHeight) && nearPt(points[3], 0, cropHeight)) {
+        if (static_cast<float>(imgCrop.rows) >= static_cast<float>(imgCrop.cols) * 1.5f) {
+            cv::Mat rotated(imgCrop.rows, imgCrop.cols, imgCrop.depth());
+            cv::transpose(imgCrop, rotated);
+            cv::flip(rotated, rotated, 0);
+            if (wasTransposed) {
+                *wasTransposed = true;
+            }
+            return rotated;
+        }
+        return imgCrop;
     }
 
     int imgCropWidth = static_cast<int>(std::sqrt(

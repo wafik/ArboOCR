@@ -93,6 +93,8 @@ int main(int argc, char* argv[]) {
             cxxopts::value<std::string>()->default_value("models/trt_engines"))
         ("clahe", "Apply CLAHE contrast enhancement before detection (helps low-contrast/faded documents)",
             cxxopts::value<bool>()->default_value("false"))
+        ("enable-cpu-mem-arena", "Leave ORT CPU memory arena on: faster, higher RSS (matches oar-ocr default)",
+            cxxopts::value<bool>()->default_value("false"))
         ("json", "Print machine-readable JSON (only JSON on stdout; suppresses the human-readable lines)",
             cxxopts::value<bool>()->default_value("false"))
         ("log-level", "Log engine events to stderr at this level — debug|info|warn|error (default: silent)",
@@ -193,6 +195,7 @@ int main(int argc, char* argv[]) {
     cfg.useFp16 = result["fp16"].as<bool>();
     cfg.trtCacheDir = result["trt-cache-dir"].as<std::string>();
     cfg.useClahe = result["clahe"].as<bool>();
+    cfg.enableCpuMemArena = result["enable-cpu-mem-arena"].as<bool>();
     // --markdown detects `key | value` rows from the wide gap between words, so
     // it needs word boxes even when --word-boxes was not asked for.
     cfg.returnWordBoxes = result["word-boxes"].as<bool>() || result.count("markdown") > 0;

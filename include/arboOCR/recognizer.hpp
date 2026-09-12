@@ -27,10 +27,12 @@ public:
     /// `intraOpNumThreads`/`interOpNumThreads` size the ORT thread pools;
     /// 0 (the default) leaves the choice to ORT. See EngineConfig for when
     /// setting them is worth it. Negative values are clamped to 0.
+    /// `enableCpuMemArena` false (the default) keeps DisableCpuMemArena for
+    /// bounded RSS; see EngineConfig::enableCpuMemArena.
     void loadModel(const std::string& modelPath, bool useCuda = false,
                    bool useTensorrt = false, const std::string& trtCacheDir = "",
                    bool useFp16 = true, int intraOpNumThreads = 0,
-                   int interOpNumThreads = 0);
+                   int interOpNumThreads = 0, bool enableCpuMemArena = false);
 
     /// RapidOcrOnnx's original keys-loading mechanism: one character per
     /// line in a plain text file. On success, prepends "#" (CTC blank) and
