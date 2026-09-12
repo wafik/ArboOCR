@@ -29,7 +29,7 @@ add_custom_command(TARGET _arboocr POST_BUILD
     COMMENT "Copy _arboocr extension into python/arboocr/"
 )
 
-if(ARBOOCR_USE_SYSTEM_DEPS)
+if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
     set_target_properties(_arboocr PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
