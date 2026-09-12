@@ -20,14 +20,42 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
-          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only
+          # Old keys hold debug+release layouts the release-only triplets
+          # below cannot reuse — stay in the new lineage (see build.yml).
           restore-keys: |
-            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-windows-x64-
+            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only-
           save-always: true
 
+      # Release-only overlay triplets generated at runtime (same mechanism as
+      # build.yml — see its Configure comment: -DVCPKG_BUILD_TYPE on the
+      # cmake line was a silent no-op that doubled every port build).
+      - name: Write release-only vcpkg triplets
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "vcpkg-triplets"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          @(
+            "# Release-only shadow of the pinned built-in x64-windows triplet",
+            "# (vcpkg commit cd61e1e). See build.yml Configure for why.",
+            "set(VCPKG_TARGET_ARCHITECTURE x64)",
+            "set(VCPKG_CRT_LINKAGE dynamic)",
+            "set(VCPKG_LIBRARY_LINKAGE dynamic)",
+            "set(VCPKG_BUILD_TYPE release)"
+          ) | Set-Content -Path (Join-Path $dir "x64-windows.cmake") -Encoding ascii
+          @(
+            "# Release-only shadow of the pinned built-in x64-linux triplet",
+            "# (vcpkg commit cd61e1e). See build.yml Configure for why.",
+            "set(VCPKG_TARGET_ARCHITECTURE x64)",
+            "set(VCPKG_CRT_LINKAGE dynamic)",
+            "set(VCPKG_LIBRARY_LINKAGE static)",
+            "set(VCPKG_CMAKE_SYSTEM_NAME Linux)",
+            "set(VCPKG_BUILD_TYPE release)"
+          ) | Set-Content -Path (Join-Path $dir "x64-linux.cmake") -Encoding ascii
+        shell: pwsh
+
       - name: Configure
-        run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
+        timeout-minutes: 60
+        run: cmake --preset windows-x64 "-DVCPKG_OVERLAY_TRIPLETS=$env:RUNNER_TEMP/vcpkg-triplets"
 
       - name: Build
         run: cmake --build build/windows-x64 --config Release
@@ -125,14 +153,40 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only
+          # Old keys hold debug+release layouts the release-only triplets
+          # below cannot reuse — stay in the new lineage (see build.yml).
           restore-keys: |
-            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-linux-x64-
+            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only-
           save-always: true
 
+      # Generated at runtime in the Windows job above (shared RUNNER_TEMP is
+      # per-job, so linux needs its own copy): release-only shadows of the
+      # pinned built-in triplets. See build.yml Configure for the rationale.
+      - name: Write release-only vcpkg triplets
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg-triplets"
+          printf '%s\n' \
+            '# Release-only shadow of the pinned built-in x64-linux triplet' \
+            '# (vcpkg commit cd61e1e). See build.yml Configure for why.' \
+            'set(VCPKG_TARGET_ARCHITECTURE x64)' \
+            'set(VCPKG_CRT_LINKAGE dynamic)' \
+            'set(VCPKG_LIBRARY_LINKAGE static)' \
+            'set(VCPKG_CMAKE_SYSTEM_NAME Linux)' \
+            'set(VCPKG_BUILD_TYPE release)' \
+            > "$RUNNER_TEMP/vcpkg-triplets/x64-linux.cmake"
+          printf '%s\n' \
+            '# Release-only shadow of the pinned built-in x64-windows triplet' \
+            '# (vcpkg commit cd61e1e). See build.yml Configure for why.' \
+            'set(VCPKG_TARGET_ARCHITECTURE x64)' \
+            'set(VCPKG_CRT_LINKAGE dynamic)' \
+            'set(VCPKG_LIBRARY_LINKAGE dynamic)' \
+            'set(VCPKG_BUILD_TYPE release)' \
+            > "$RUNNER_TEMP/vcpkg-triplets/x64-windows.cmake"
+
       - name: Configure
-        run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
+        timeout-minutes: 60
+        run: cmake --preset linux-x64 "-DVCPKG_OVERLAY_TRIPLETS=$RUNNER_TEMP/vcpkg-triplets"
 
       - name: Clean vcpkg buildtrees
         run: rm -rf build/linux-x64/vcpkg_installed/*/buildtrees/* || true
