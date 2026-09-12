@@ -31,10 +31,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/build/linux-x64/vcpkg_installed
-          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only
+          # -release-only suffix: the old keys hold debug+release layouts for
+          # the default triplets (see Configure). Restoring one would be a
+          # ~800 MB download of bits the release-only triplets below cannot
+          # reuse, so restore-keys stay within the new lineage only.
           restore-keys: |
-            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-linux-x64-
+            vcpkg-linux-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only-
 
       # 1. Kosongkan disk agar build OpenCV tidak gagal karena storage penuh.
       # Only needed when vcpkg has to build from source. On an exact cache hit
@@ -80,9 +83,46 @@ jobs:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
           vcpkgJsonGlob: '**/vcpkg.json'
 
-      # 4. Configure & install dependencies via vcpkg
+      # Write release-only overlay triplets into RUNNER_TEMP (generated at
+      # runtime, so the committed tree stays inside .github/workflows/).
+      # VCPKG_BUILD_TYPE is a TRIPLET variable ("You can set this value to
+      # `release` to build release-only versions of the ports", MS Learn:
+      # vcpkg/users/triplets). The old `-DVCPKG_BUILD_TYPE=release` on the
+      # cmake line was a silent no-op — every green log ends Configure with
+      # "Manually-specified variables were not used by the project:
+      # VCPKG_BUILD_TYPE" — so vcpkg built every port TWICE (~24 debug +
+      # ~29 release builds: onnxruntime 38-44 min, protobuf ~11-15 min,
+      # opencv4 ~7-10 min per OS). Same-name overlay files shadow the built-in
+      # triplets, so install paths (vcpkg_installed/x64-*) and everything
+      # downstream are untouched.
+      - name: Write release-only vcpkg triplets
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg-triplets"
+          printf '%s\n' \
+            '# Release-only shadow of the pinned built-in x64-linux triplet' \
+            '# (vcpkg commit cd61e1e). See the Configure step for why.' \
+            'set(VCPKG_TARGET_ARCHITECTURE x64)' \
+            'set(VCPKG_CRT_LINKAGE dynamic)' \
+            'set(VCPKG_LIBRARY_LINKAGE static)' \
+            'set(VCPKG_CMAKE_SYSTEM_NAME Linux)' \
+            'set(VCPKG_BUILD_TYPE release)' \
+            > "$RUNNER_TEMP/vcpkg-triplets/x64-linux.cmake"
+          printf '%s\n' \
+            '# Release-only shadow of the pinned built-in x64-windows triplet' \
+            '# (vcpkg commit cd61e1e). See the Configure step for why.' \
+            'set(VCPKG_TARGET_ARCHITECTURE x64)' \
+            'set(VCPKG_CRT_LINKAGE dynamic)' \
+            'set(VCPKG_LIBRARY_LINKAGE dynamic)' \
+            'set(VCPKG_BUILD_TYPE release)' \
+            > "$RUNNER_TEMP/vcpkg-triplets/x64-windows.cmake"
+
+      # 4. Configure & install dependencies via vcpkg. Cold Configure was
+      # 66-80 min of full debug+release source builds; release-only roughly
+      # halves it, and the 60 min timeout turns any future hang into a loud
+      # failure instead of a 6-hour billing surprise.
       - name: Configure
-        run: cmake --preset linux-x64 -DVCPKG_BUILD_TYPE=release
+        timeout-minutes: 60
+        run: cmake --preset linux-x64 "-DVCPKG_OVERLAY_TRIPLETS=$RUNNER_TEMP/vcpkg-triplets"
 
       # 5. Hapus sampah kompilasi untuk menghemat space sebelum build utama
       - name: Clean vcpkg buildtrees
@@ -119,10 +159,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/build/windows-x64/vcpkg_installed
-          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e
+          key: vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only
+          # See the linux job: old keys hold debug+release layouts the new
+          # release-only triplets cannot reuse, so stay in the new lineage.
           restore-keys: |
-            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-windows-x64-
+            vcpkg-windows-x64-${{ hashFiles('vcpkg.json') }}-cd61e1e-release-only-
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -130,8 +171,35 @@ jobs:
           vcpkgGitCommitId: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
           vcpkgJsonGlob: '**/vcpkg.json'
 
+      # Same generated release-only overlay triplets as the linux job (see its
+      # comment: the old -DVCPKG_BUILD_TYPE on the cmake line was a silent
+      # no-op and doubled the port work). PowerShell heredoc, same content.
+      - name: Write release-only vcpkg triplets
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "vcpkg-triplets"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          @(
+            "# Release-only shadow of the pinned built-in x64-windows triplet",
+            "# (vcpkg commit cd61e1e). See the Configure step for why.",
+            "set(VCPKG_TARGET_ARCHITECTURE x64)",
+            "set(VCPKG_CRT_LINKAGE dynamic)",
+            "set(VCPKG_LIBRARY_LINKAGE dynamic)",
+            "set(VCPKG_BUILD_TYPE release)"
+          ) | Set-Content -Path (Join-Path $dir "x64-windows.cmake") -Encoding ascii
+          @(
+            "# Release-only shadow of the pinned built-in x64-linux triplet",
+            "# (vcpkg commit cd61e1e). See the Configure step for why.",
+            "set(VCPKG_TARGET_ARCHITECTURE x64)",
+            "set(VCPKG_CRT_LINKAGE dynamic)",
+            "set(VCPKG_LIBRARY_LINKAGE static)",
+            "set(VCPKG_CMAKE_SYSTEM_NAME Linux)",
+            "set(VCPKG_BUILD_TYPE release)"
+          ) | Set-Content -Path (Join-Path $dir "x64-linux.cmake") -Encoding ascii
+        shell: pwsh
+
       - name: Configure
-        run: cmake --preset windows-x64 -DVCPKG_BUILD_TYPE=release
+        timeout-minutes: 60
+        run: cmake --preset windows-x64 "-DVCPKG_OVERLAY_TRIPLETS=$env:RUNNER_TEMP/vcpkg-triplets"
 
       - name: Clean vcpkg buildtrees (Windows)
         run: Remove-Item -Recurse -Force build\windows-x64\vcpkg_installed\*\buildtrees\* -ErrorAction SilentlyContinue
