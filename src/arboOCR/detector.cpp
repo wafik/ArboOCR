@@ -74,6 +74,12 @@ void Detector::loadModel(const std::string& modelPath, bool useCuda,
     sessionOptions_.SetIntraOpNumThreads(std::max(0, intraOpNumThreads));
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
+    // Match ppu-paddle-ocr session flags: sequential execution avoids
+    // per-op thread-pool overhead on the single-image OCR path, and the
+    // memory pattern reuses tensor buffers across runs.
+    sessionOptions_.EnableMemPattern();
+    sessionOptions_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+
     // ORT's CPU arena never returns memory to the OS once grown; disabling it
     // bounds RSS. See EngineConfig::enableCpuMemArena for the trade-off.
     if (!enableCpuMemArena) {

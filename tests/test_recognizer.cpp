@@ -242,6 +242,71 @@ TEST_CASE("returnSpans is off by default: tokens/spans stay empty and text is un
     CHECK(line.spans.empty());
 }
 
+// --- spaceRecovery (opt-in, see Recognizer::setSpaceRecovery) ---
+// Logits: a strong space runner-up at the 'b' timestep (t=3) — the word-
+// boundary case greedy argmax swallows.
+namespace {
+std::vector<float> withSpaceRunnerUp(std::vector<float> out, int numClasses, int step,
+                                     float spaceLogit) {
+    out[static_cast<size_t>(step) * static_cast<size_t>(numClasses)
+        + static_cast<size_t>(numClasses - 1)] = spaceLogit;
+    return out;
+}
+} // namespace
+
+TEST_CASE("spaceRecovery is off by default: a strong space runner-up changes nothing") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    CHECK(net.spaceRecovery() == false);
+    auto output = withSpaceRunnerUp(ctcOutput({1, 1, 0, 2, 2, 2}, 7), 7, 3, 0.9f);
+    auto line = net.decodeForTest(output, 6, 7);
+    CHECK(line.text == "ab"); // identical to the plain decode
+    CHECK(line.charScores.size() == 2);
+}
+
+TEST_CASE("spaceRecovery on: emits the swallowed space before the character") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setSpaceRecovery(true);
+    CHECK(net.spaceRecovery() == true);
+    net.setReturnSpans(true); // tokens are only observable with spans on
+    auto output = withSpaceRunnerUp(ctcOutput({1, 1, 0, 2, 2, 2}, 7), 7, 3, 0.9f);
+    auto line = net.decodeForTest(output, 6, 7);
+    CHECK(line.text == "a b"); // space lands before the letter, as ppu does
+    REQUIRE(line.tokens.size() == 3);
+    CHECK(line.tokens[0] == "a");
+    CHECK(line.tokens[1] == " ");
+    CHECK(line.tokens[2] == "b");
+    // Scores stay index-aligned with tokens (same convention as injected
+    // gap spaces): the space carries its own runner-up logit.
+    REQUIRE(line.charScores.size() == 3);
+    CHECK(line.charScores[1] == doctest::Approx(0.9f));
+    REQUIRE(line.spans.size() == 3);
+    CHECK(line.spans[1].begin == doctest::Approx(3.0f / 6.0f));
+    CHECK(line.spans[1].end == doctest::Approx(4.0f / 6.0f));
+}
+
+TEST_CASE("spaceRecovery respects ppu's 0.001 bar and the no-double-space guard") {
+    Recognizer net;
+    net.loadKeysFromFile("tests/fixtures/sample_keys.txt");
+    net.setSpaceRecovery(true);
+
+    // Exactly 0.001 is NOT a strong runner-up (strict `>`), and the space
+    // class must not be the winning class either way.
+    auto atBar = withSpaceRunnerUp(ctcOutput({1, 1, 0, 2, 2, 2}, 7), 7, 3, 0.001f);
+    CHECK(net.decodeForTest(atBar, 6, 7).text == "ab");
+
+    // The space class won at t=2, so the emitted token before 'b' is already
+    // a space: the runner-up at t=3 must not add a second one.
+    net.setReturnSpans(true);
+    auto alreadySpaced = withSpaceRunnerUp(ctcOutput({1, 1, 6, 2, 2}, 7), 7, 3, 0.9f);
+    auto line = net.decodeForTest(alreadySpaced, 5, 7);
+    CHECK(line.text == "a b");
+    REQUIRE(line.tokens.size() == 3);
+    CHECK(line.tokens[1] == " ");
+    CHECK(line.tokens[2] == "b");
+}
+
 TEST_CASE("returnSpans on, no padding: each span covers its token's whole CTC run") {
     Recognizer net;
     net.loadKeysFromFile("tests/fixtures/sample_keys.txt");

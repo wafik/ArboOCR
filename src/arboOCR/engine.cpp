@@ -7,6 +7,7 @@
 
 #include <onnxruntime_cxx_api.h>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp> // cv::boundingRect (minDetBoxArea pre-filter)
 
 #include "arboOCR/logging.hpp"
 #include "arboOCR/model_downloader.hpp"
@@ -161,6 +162,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     // Must be set before loadModel so TensorRT profiles match runtime batch size.
     recognizer_.setRecBatchNum(config.recBatchNum);
     recognizer_.setReturnSpans(config.returnWordBoxes);
+    recognizer_.setSpaceRecovery(config.spaceRecovery);
 
     detector_.loadModel(paths.det, useCuda, useTensorrt, config.trtCacheDir, config.useFp16,
         config.intraOpNumThreads, config.interOpNumThreads, config.enableCpuMemArena);
@@ -202,6 +204,39 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         auto textBoxes = detector_.getTextBoxes(prepped, scale, config_.detBoxThresh, config_.detThresh, config_.detUnclipRatio);
         if (config_.splitOvermerged) {
             textBoxes = expandOvermergedBoxes(textBoxes, prepped);
+        }
+
+        // Tiny-box pre-filter (EngineConfig::minDetBoxArea). Filtering
+        // textBoxes here, before anything is sized off it, is the whole
+        // implementation: partImages / wasTransposed / wasRotated180 and the
+        // later textLines loop are all indexed by this same vector, so a
+        // dropped box simply never reaches the crop, the angle classifier, the
+        // CRNN batch or the output — indices stay aligned with no placeholders.
+        // Cheap and rare: one bounding rect per candidate box.
+        if (config_.minDetBoxArea > 0.0f) {
+            // The threshold is in detector-input pixels (see the config doc),
+            // so scale each source-space area up by the det resize's own area
+            // factor. Both dims are integers on the same 32-grid, so one ratio
+            // is exact enough here.
+            const double srcArea = static_cast<double>(prepped.cols) * prepped.rows;
+            const double detInputArea = static_cast<double>(scale.dstWidth) * scale.dstHeight;
+            const float toDetInput =
+                (srcArea > 0.0) ? static_cast<float>(detInputArea / srcArea) : 0.0f;
+            size_t kept = 0;
+            for (size_t i = 0; i < textBoxes.size(); i++) {
+                const cv::Rect r = cv::boundingRect(textBoxes[i].boxPoint);
+                const float detArea = static_cast<float>(r.width) * static_cast<float>(r.height)
+                    * toDetInput;
+                if (detArea > config_.minDetBoxArea) {
+                    textBoxes[kept++] = textBoxes[i];
+                }
+            }
+            if (kept < textBoxes.size()) {
+                log(LogLevel::Debug, "Dropped " + std::to_string(textBoxes.size() - kept)
+                    + " det box(es) below minDetBoxArea=" + std::to_string(config_.minDetBoxArea)
+                    + " (in det input pixels)");
+                textBoxes.resize(kept);
+            }
         }
 
         std::vector<cv::Mat> partImages;

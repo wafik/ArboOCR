@@ -19,11 +19,6 @@ namespace arbo::ocr {
 
 namespace {
 
-template <typename ForwardIt>
-size_t argmax(ForwardIt first, ForwardIt last) {
-    return static_cast<size_t>(std::distance(first, std::max_element(first, last)));
-}
-
 // "no CTC run is currently open" sentinel for the span bookkeeping in
 // scoreToTextLine() (index into its local `spans` vector).
 constexpr size_t kNoOpenRun = static_cast<size_t>(-1);
@@ -41,6 +36,10 @@ void Recognizer::setReturnSpans(bool enabled) {
     returnSpans_ = enabled;
 }
 
+void Recognizer::setSpaceRecovery(bool enabled) {
+    spaceRecovery_ = enabled;
+}
+
 void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
                          bool useTensorrt, const std::string& trtCacheDir,
                          bool useFp16, int intraOpNumThreads, int interOpNumThreads,
@@ -50,6 +49,12 @@ void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
     sessionOptions_.SetInterOpNumThreads(std::max(0, interOpNumThreads));
     sessionOptions_.SetIntraOpNumThreads(std::max(0, intraOpNumThreads));
     sessionOptions_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+    // Match ppu-paddle-ocr session flags: sequential execution avoids
+    // per-op thread-pool overhead on the single-image OCR path, and the
+    // memory pattern reuses tensor buffers across runs.
+    sessionOptions_.EnableMemPattern();
+    sessionOptions_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
 
     // ORT's CPU arena never returns memory to the OS once grown; disabling it
     // bounds RSS. See EngineConfig::enableCpuMemArena for the trade-off.
@@ -64,7 +69,7 @@ void Recognizer::loadModel(const std::string& modelPath, bool useCuda,
     // per-shape (default 6 matches PaddleOCR/RapidOCR and this project's
     // TENSORRT_ENGINE_PORT_PLAN.md Opsi 1 table).
     const int batch = recBatchNum_;
-    const std::string minProfile = "x:1x3x48x32";
+    const std::string minProfile = "x:1x3x48x" + std::to_string(kMinBatchWidth);
     const std::string optProfile = "x:" + std::to_string(batch) + "x3x48x320";
     const std::string maxProfile = "x:" + std::to_string(batch) + "x3x48x2048";
     detail::configureExecutionProviders(sessionOptions_, useCuda, useTensorrt, trtCacheDir,
@@ -165,15 +170,41 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
     size_t openRun = kNoOpenRun;
     size_t lastStep = 0; // last timestep actually decoded; closes the final run
 
-    for (size_t i = 0; i < h; i++) {
+    // The model's timesteps span the PADDED batch strip; this crop occupies
+    // only its first `contentFraction` of that strip, so only those timesteps
+    // are decoded. The tail covers the crop's zero padding and can only ever
+    // contribute hallucinated trailing characters or blanks, exactly what ppu
+    // cuts off before decoding (batched.ts:99-107). At least one timestep
+    // always survives so a degenerate crop still yields a line rather than
+    // being silently dropped; a contentFraction <= 0 means "no correction"
+    // and therefore decodes everything.
+    const float decodeShare = contentFraction > 0.f ? contentFraction : 1.f;
+    const size_t decodedSteps = std::max<size_t>(
+        1, std::min(h, static_cast<size_t>(std::ceil(static_cast<double>(h) * decodeShare))));
+
+    for (size_t i = 0; i < decodedSteps; i++) {
         size_t start = i * w;
         size_t stop = (i + 1) * w;
         if (stop > dataSize) stop = dataSize; // guard against short buffers (differs from
                                                // RapidOcrOnnx's `dataSize - 1`, which can
                                                // under-read the last timestep by one class)
         if (start >= stop) continue;
-        size_t maxIndex = argmax(outputData + start, outputData + stop);
-        float maxValue = *std::max_element(outputData + start, outputData + stop);
+        // One pass for both the winning class and its score. This used to be
+        // argmax() followed by max_element(), walking each timestep's class
+        // vector twice; ppu does a single scan (ctc.ts:149-162). Strict `>`
+        // keeps the first (lowest-index) maximum, exactly what argmax()'s
+        // std::max_element did, so for the same logits this step produces the
+        // same index/score pair as before — a pure refactor. (Which logits
+        // arrive is a separate question, answered by the batch-width note on
+        // getTextLines(): a narrower strip changes them slightly.)
+        size_t maxIndex = 0;
+        float maxValue = outputData[start];
+        for (size_t c = start + 1; c < stop; c++) {
+            if (outputData[c] > maxValue) {
+                maxValue = outputData[c];
+                maxIndex = c - start;
+            }
+        }
 
         // The previously-open run ended at timestep i-1, so its exclusive
         // end boundary is i. Done before the emit below, so a run of X
@@ -185,6 +216,32 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
         }
 
         if (maxIndex > 0 && maxIndex < keySize && !(i > 0 && maxIndex == lastIndex)) {
+            // Space recovery (opt-in, see setSpaceRecovery()). Recognition
+            // models drop inter-word spaces: at a word boundary the space
+            // class often scores just under the next letter, and greedy
+            // argmax swallows it. Mirrors ppu-paddle-ocr's ctc.ts exactly —
+            // same trailing-space key as "lastDictIndex" (finalizeKeys puts
+            // the " " key last), same 0.001 runner-up bar, same "the previous
+            // emitted token is not already a space" guard. It cannot fire on
+            // a timestep where the space class itself won: maxIndex ==
+            // keySize-1 is excluded, and that case emits the space below.
+            // keySize <= w here (a winning index is always inside this
+            // timestep's own row), so the last-key read below is in bounds.
+            if (spaceRecovery_ && maxIndex != keySize - 1
+                && outputData[start + keySize - 1] > 0.001f
+                && (tokens.empty() || tokens.back() != " ")) {
+                tokens.push_back(" ");
+                scores.push_back(outputData[start + keySize - 1]);
+                positions.push_back((static_cast<float>(i) + 0.5f) * invH);
+                if (wantSpans) {
+                    // Index-aligned with tokens like every other span, but
+                    // one timestep wide and deliberately NOT opened as a run:
+                    // a space stands for no glyph, so the character emitted
+                    // next must not inherit this timestep as its own start.
+                    spans.push_back({static_cast<float>(i) * invH,
+                                     static_cast<float>(i + 1) * invH});
+                }
+            }
             scores.push_back(maxValue);
             tokens.push_back(keys_[maxIndex]);
             positions.push_back((static_cast<float>(i) + 0.5f) * invH);
@@ -199,21 +256,31 @@ RawTextLine Recognizer::scoreToTextLine(const float* outputData, size_t dataSize
         lastStep = i;
     }
     // The final run has no following timestep to close it — it ends at the
-    // last timestep that was actually decoded (which is h-1 for a complete
-    // buffer, and earlier if the short-buffer guard above cut the loop off).
+    // last timestep that was actually decoded (decodedSteps-1, i.e. the end
+    // of this crop's content; earlier still if the short-buffer guard above
+    // cut the loop off).
     if (wantSpans && openRun != kNoOpenRun) {
         spans[openRun].end = static_cast<float>(lastStep + 1) * invH;
     }
 
     if (wantSpans && !spans.empty()) {
-        // PADDING CORRECTION. `h` is the CTC timestep count over the PADDED
-        // batch strip: runBatchInference() feeds a [batch, 3, kDstHeight,
+        // PADDING CORRECTION. The model's timesteps span the PADDED batch
+        // strip: runBatchInference() feeds a [batch, 3, kDstHeight,
         // batchWidth] tensor and reads timeSteps from the model output, so
-        // timesteps span batchWidth — not this crop's real resized width.
-        // A crop narrower than batchWidth therefore has every one of its
-        // fractions compressed toward 0. Dividing by contentFraction
-        // (= crop.cols / batchWidth) maps them back onto the crop's own
-        // content width, which is what page-coordinate mapping needs.
+        // timesteps are laid out over batchWidth — not this crop's real
+        // resized width. A crop narrower than batchWidth therefore has every
+        // one of its fractions compressed toward 0. Dividing by
+        // contentFraction (= crop.cols / batchWidth) maps them back onto the
+        // crop's own content width, which is what page-coordinate mapping
+        // needs.
+        //
+        // `h` stays the FULL padded timestep count even though the decode
+        // above stopped at the crop's content end: fractions are normalized
+        // by h, so the truncation must not change that denominator or every
+        // span would stretch by 1/contentFraction. Decoding fewer timesteps
+        // and rescaling the same way is what keeps the spans identical to
+        // the untruncated decode (test_recognizer.cpp's "padding must not
+        // move content" equality pins this).
         //
         // Deliberately NOT derived from batchWidth/8 or any other assumed
         // CNN downsample factor: nothing in this repo guarantees a fixed
@@ -347,21 +414,22 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
 
     std::vector<RawTextLine> results;
     results.reserve(resizedCrops.size());
-    // CTC-decode the full padded width per row, unconditionally — no
-    // truncation/masking by each crop's real (unpadded) width. This relies
-    // on the trained CRNN model emitting the CTC blank token in padding
-    // columns; upstream does the same (confirmed by absence of masking
-    // code there — see getTextLines() doc comment).
+    // Each row is decoded only over its own content's share of the padded
+    // width — scoreToTextLine() gets the full timeSteps and contentFraction
+    // and cuts the decode itself. The tail timesteps cover the crop's zero
+    // padding, so decoding them is pure wasted argmax work (ppu truncates to
+    // `validSeq` before decoding — batched.ts:99-107).
     for (int64_t b = 0; b < outBatch && b < static_cast<int64_t>(resizedCrops.size()); b++) {
         int64_t offset = b * perItemCount;
         if (offset + perItemCount > outCount) break; // guard: short buffer
         // Fraction of the padded batch strip this crop's real content
         // occupies. timeSteps spans batchWidth (the padded width), so
-        // scoreToTextLine needs this ratio to express token spans as
-        // fractions of the crop itself — see its PADDING CORRECTION note.
-        // Capped at 1.0: a crop wider than batchWidth violates
-        // buildBatchTensor's precondition and was skipped there (its slot
-        // is all zero-padding), so it can't occupy more than the full strip.
+        // scoreToTextLine needs this ratio both to express token spans as
+        // fractions of the crop itself (see its PADDING CORRECTION note) and
+        // to decide where the crop's content ends and padding begins. Capped
+        // at 1.0: a crop wider than batchWidth violates buildBatchTensor's
+        // precondition and was skipped there (its slot is all zero-padding),
+        // so it can't occupy more than the full strip.
         const int cropCols = resizedCrops[static_cast<size_t>(b)].cols;
         const float contentFraction = (batchWidth > 0 && cropCols > 0)
             ? std::min(1.0f, static_cast<float>(cropCols) / static_cast<float>(batchWidth))
@@ -369,7 +437,9 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
         // Decode straight from this item's slice of the shared output
         // buffer — no per-item copy (numClasses is in the thousands for
         // PP-OCR's CJK dictionaries, so this is a real cost on the hot
-        // path, not just style).
+        // path, not just style). scoreToTextLine() derives this crop's own
+        // decode length from contentFraction and stops at the end of the
+        // crop's content instead of walking the whole padded strip.
         results.push_back(scoreToTextLine(raw + offset, static_cast<size_t>(perItemCount),
                                            static_cast<size_t>(timeSteps), static_cast<size_t>(numClasses),
                                            contentFraction));
@@ -434,10 +504,17 @@ std::vector<RawTextLine> Recognizer::getTextLines(std::vector<cv::Mat>& partImag
     for (size_t groupStart = 0; groupStart < n; groupStart += batchNum) {
         size_t groupEnd = std::min(groupStart + batchNum, n);
 
-        // 2. max_wh_ratio starts at the model's reference ratio (kRefImgWidth
-        // / kDstHeight) and is raised to the widest crop's own ratio in this
-        // batch — matches upstream exactly (see getTextLines() doc comment).
-        double maxWhRatio = static_cast<double>(kRefImgWidth) / kDstHeight;
+        // 2. max_wh_ratio starts at kMinBatchWidth / kDstHeight — just enough
+        // to keep a batch of very narrow crops from collapsing to a 1px
+        // strip — and is raised to the widest crop's own ratio in this batch.
+        // Upstream (and this file until now) seeds the model's reference
+        // ratio (320/48) instead, which pads every narrow batch out to a
+        // 320px-wide inference no matter how narrow its crops are; ppu sizes
+        // each chunk to its own widest crop (batched.ts:55-59). Dropping the
+        // floor only changes how much zero padding the batch carries, not any
+        // crop's own resized pixels, so decoded text is unchanged.
+        double maxWhRatio = static_cast<double>(kMinBatchWidth) / kDstHeight;
+        int widestNaturalWidth = kMinBatchWidth; // widest crop's own resized width (ceil)
         std::vector<size_t> validIdx; // indices (into `order`) with a usable crop
         for (size_t k = groupStart; k < groupEnd; k++) {
             const cv::Mat& src = partImages[order[k]];
@@ -445,12 +522,21 @@ std::vector<RawTextLine> Recognizer::getTextLines(std::vector<cv::Mat>& partImag
                 lines[order[k]] = {"", {}}; // guard: degenerate crop upstream, or a
                 continue;                   // custom-pipeline crop with an unsupported channel count
             }
-            maxWhRatio = std::max(maxWhRatio, static_cast<double>(src.cols) / src.rows);
+            const double ratio = static_cast<double>(src.cols) / src.rows;
+            maxWhRatio = std::max(maxWhRatio, ratio);
+            widestNaturalWidth = std::max(widestNaturalWidth,
+                static_cast<int>(std::ceil(kDstHeight * ratio)));
             validIdx.push_back(k);
         }
         if (validIdx.empty()) continue;
 
-        int batchWidth = static_cast<int>(kDstHeight * maxWhRatio); // truncating cast, matches upstream int()
+        // Truncating cast, matches upstream int(). Clamped up to the widest
+        // crop's own resized width: floor(48*ratio) can land one below
+        // ceil(48*ratio) (the width that crop is actually resized to), and a
+        // 320px floor used to dominate that difference so it never bit. Now
+        // that batchWidth tracks the batch's own widest crop, taking the max
+        // keeps every crop's resized pixels identical to what they were.
+        int batchWidth = std::max(static_cast<int>(kDstHeight * maxWhRatio), widestNaturalWidth);
 
         // 3. Resize each valid crop to its own natural width (aspect-ratio
         // preserved, height fixed), capped at batchWidth — narrower crops
