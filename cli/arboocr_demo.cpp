@@ -79,11 +79,15 @@ int main(int argc, char* argv[]) {
             cxxopts::value<float>()->default_value("1.6"))
         ("split-overmerged", "Split wide det boxes that fuse two side-by-side fields (ink-gap heuristic)",
             cxxopts::value<bool>()->default_value("false"))
+        ("min-det-box-area", "Drop det boxes at or below this area in detector-input pixels (0 disables; ppu default 20)",
+            cxxopts::value<float>()->default_value("20"))
         // Recognition tuning.
         ("rec-batch-num", "Crops per recognition inference call (clamped to >= 1)",
             cxxopts::value<int>()->default_value("6"))
         ("min-confidence", "Drop lines below this recognition confidence (0 disables filtering)",
             cxxopts::value<float>()->default_value("0.5"))
+        ("space-recovery", "Emit inter-word spaces greedy CTC decode swallows (opt-in; can add spurious spaces)",
+            cxxopts::value<bool>()->default_value("false"))
         ("angle", "Enable angle classification", cxxopts::value<bool>()->default_value("false"))
         ("cuda", "Request CUDA execution provider", cxxopts::value<bool>()->default_value("false"))
         ("tensorrt", "Request TensorRT execution provider", cxxopts::value<bool>()->default_value("false"))
@@ -187,8 +191,10 @@ int main(int argc, char* argv[]) {
     cfg.detBoxThresh = result["det-box-thresh"].as<float>();
     cfg.detUnclipRatio = result["det-unclip-ratio"].as<float>();
     cfg.splitOvermerged = result["split-overmerged"].as<bool>();
+    cfg.minDetBoxArea = result["min-det-box-area"].as<float>();
     cfg.recBatchNum = result["rec-batch-num"].as<int>();
     cfg.minimumConfidence = result["min-confidence"].as<float>();
+    cfg.spaceRecovery = result["space-recovery"].as<bool>();
     cfg.useAngleCls = result["angle"].as<bool>();
     cfg.useCuda = result["cuda"].as<bool>();
     cfg.useTensorrt = result["tensorrt"].as<bool>();

@@ -73,6 +73,20 @@ public:
     void setReturnSpans(bool enabled);
     bool returnSpans() const { return returnSpans_; }
 
+    /// Opt-in inter-word space recovery. Recognition models routinely drop the
+    /// spaces between words: at a word boundary the space class scores just
+    /// under the following letter, so greedy CTC argmax swallows it and
+    /// "ATAS NAMA" comes back as "ATASNAMA". When enabled, a timestep whose
+    /// winner is a real character but whose *space* logit is a strong
+    /// runner-up (above ppu-paddle-ocr's 0.001 bar, whose spaceRecovery this
+    /// mirrors) emits that space alongside the character.
+    /// Off by default and byte-identical when off: the decode output is
+    /// compared against fixtures, and the heuristic can insert spurious
+    /// spaces in dense symbol/number runs where the space class is a common
+    /// near-miss. Turn it on when output words are visibly run together.
+    void setSpaceRecovery(bool enabled);
+    bool spaceRecovery() const { return spaceRecovery_; }
+
     /// Recognize one cropped, angle-corrected text-line image per input Mat,
     /// returned in the SAME order as `partImages`.
     ///
@@ -84,22 +98,40 @@ public:
     ///   1. Sort crops by ascending aspect ratio (width/height) so each
     ///      batch groups similarly-shaped crops together (less padding
     ///      waste); original order is restored in the returned vector.
-    ///   2. Per batch, `max_wh_ratio` starts at the model's reference ratio
-    ///      (320/48) and is raised to the widest crop's own ratio in that
-    ///      batch; `batchWidth = int(kDstHeight * max_wh_ratio)` (truncating
-    ///      cast, not rounding).
+    ///   2. Per batch, `max_wh_ratio` starts at `kMinBatchWidth / kDstHeight`
+    ///      and is raised to the widest crop's own ratio in that batch;
+    ///      `batchWidth = int(kDstHeight * max_wh_ratio)` (truncating cast,
+    ///      not rounding), clamped up to the widest crop's own resized width.
+    ///      The seed is a 32px floor rather than the model's reference ratio
+    ///      (320/48): a narrow batch is sized to the widest crop it actually
+    ///      contains (ppu batched.ts:55-59) instead of always paying for a
+    ///      320px-wide strip of padding.
     ///   3. Each crop is resized (aspect-ratio preserved, height fixed) to
     ///      its own natural width capped at `batchWidth`, THEN normalized —
     ///      only after that is it copied into a zero-initialized
     ///      `batchWidth`-wide buffer. Padding value is 0.0 in NORMALIZED
     ///      float space, not a pre-normalization pixel value — those are
     ///      different values (raw pixel 0 normalizes to -1.0, not 0.0).
-    ///   4. CTC-decoded per row over the full padded width with no
-    ///      truncation/masking by real width — this relies on the trained
-    ///      CRNN model reliably emitting the CTC blank token in padding
-    ///      columns, which is how upstream does it too (confirmed by
-    ///      absence of any masking code there, not by an explicit guarantee
-    ///      in the decode step itself).
+    ///      `batchWidth` tracks the batch's own content, so a crop's own
+    ///      resized pixels are the same whatever the batch's width is.
+    ///   4. CTC-decoded per row only up to that row's share of the padded
+    ///      width (`ceil(timeSteps * crop.cols / batchWidth)`). The trailing
+    ///      timesteps cover only zero padding, so cutting them before the
+    ///      decode removes argmax work — ppu truncates the same way
+    ///      (batched.ts:99-107).
+    ///
+    /// NOT byte-identical to the old fixed-320 strip, and the unit tests
+    /// cannot tell you so: they feed synthetic fixtures through
+    /// decodeForTest(), never real model logits, so they pin the decode
+    /// algebra (padding must not move content) but not the text a real CRNN
+    /// emits. Measured on SROIE small (40 receipts, out/bench_arbo_ppu_ab.py
+    /// vs out/bench_ppu_n40_small3.json, oar/ppu re-run as controls to rule
+    /// out thermal drift): avg sim 86.31% -> 86.40% — flat to slightly up —
+    /// but only 8/40 stems identical, 20 up and 12 down, worst -0.5pp.
+    /// Cause is the batch-width change, not the truncation: a narrower strip
+    /// feeds the conv stack different right-edge context, so logits differ
+    /// marginally in the last characters of each crop. Net neutral here;
+    /// re-measure on your own corpus before relying on either number.
     ///
     /// Measured on the bundled sample receipt (31 text lines) on a Jetson
     /// Nano: CPU backend got SLOWER after batching (~3.9s -> ~5.0s) — CPU
@@ -141,16 +173,20 @@ private:
     /// larger ONNXRuntime output buffer (see runBatchInference()) don't
     /// need to materialize a per-item copy just to call this.
     ///
-    /// `h` is the CTC timestep count, which corresponds to the PADDED batch
-    /// width (see runBatchInference()), not to this crop's real resized
-    /// width. `contentFraction` is `crop.cols / batchWidth` — the fraction
-    /// of that padded strip actually occupied by image content — and is used
-    /// to rescale timestep fractions onto the crop's own content width when
-    /// filling RawTextLine::spans. A single precomputed ratio is passed
-    /// rather than the two widths because that is the only thing the decode
-    /// needs: it keeps this function ignorant of batching entirely, and it
-    /// gives the test seam one knob instead of two coupled ones. Values <= 0
-    /// are treated as 1.0 (no correction).
+    /// `h` is the CTC timestep count of the PADDED batch strip — runBatchInference()
+    /// passes the model's full `timeSteps`, not this crop's share — and this
+    /// function cuts its own decode at `ceil(h * contentFraction)`. Do NOT
+    /// pre-truncate `h` at the call site: it is also the denominator of every
+    /// timestep fraction below (see the `invH`/span math), so shrinking it
+    /// would rescale the spans and silently move every word box.
+    /// `contentFraction` is `crop.cols / batchWidth` — the fraction of the
+    /// padded strip actually occupied by image content — and drives both that
+    /// decode cut and the span rescale onto the crop's own content width, so
+    /// the two can never disagree. A single precomputed ratio
+    /// is passed rather than the two widths because that is the only thing the
+    /// decode needs: it keeps this function ignorant of batching entirely, and
+    /// it gives the test seam one knob instead of two coupled ones. Values <= 0
+    /// are treated as 1.0 (no correction, decode everything).
     RawTextLine scoreToTextLine(const float* outputData, size_t dataSize, size_t h, size_t w,
                                 float contentFraction = 1.0f) const;
 
@@ -199,11 +235,19 @@ private:
 
     // Default matches PaddleOCR/RapidOCR's rec_batch_num=6. Overridable via
     // setRecBatchNum() / EngineConfig::recBatchNum before loadModel().
-    // rec_image_shape [3, 48, 320] -> kRefImgWidth seeds max_wh_ratio per batch.
     int recBatchNum_ = 6;
     // Off by default — see setReturnSpans().
     bool returnSpans_ = false;
-    static constexpr int kRefImgWidth = 320;
+    // Off by default — see setSpaceRecovery().
+    bool spaceRecovery_ = false;
+    // Smallest batch strip width the recognizer will run at: a batch is sized
+    // to the widest crop it actually holds (ppu batched.ts:55-59), with this
+    // narrow floor so a batch of tiny crops can't collapse to a degenerate
+    // strip. Deliberately NOT the model's reference width (rec_image_shape's
+    // 320) — flooring every batch there padded narrow batches out to 320px of
+    // pure wasted inference. The single min/max profile registered with
+    // TensorRT (`x:1x3x48x32`) uses the same value.
+    static constexpr int kMinBatchWidth = 32;
     static constexpr int kDstHeight = 48;
     const float meanValues_[3] = {127.5f, 127.5f, 127.5f};
     const float normValues_[3] = {1.0f / 127.5f, 1.0f / 127.5f, 1.0f / 127.5f};

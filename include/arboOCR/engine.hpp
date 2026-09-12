@@ -85,10 +85,30 @@ int detLimitSideLen = 960;
     // closed most of the full-page gap (~87.7% → ~94.4%); aggressive split
     // over-fragmented and lost ~1 pt. Enable when det clearly fuses fields.
     bool splitOvermerged = false;
+    // Drop det boxes whose area is at or below this, measured in DETECTOR
+    // INPUT pixels — ppu-paddle-ocr's minimumAreaThreshold (default 20). A
+    // box's source-image area is scaled by detInputArea/srcArea before the
+    // comparison, because ppu tests the contour rect on its padded detector
+    // tensor and this config keeps that meaning (so the default means the
+    // same 20px^2 whatever detLimitSideLen does to an image). Boxes this
+    // small hold no readable glyph, so dropping them saves a getRotateCropImage
+    // plus a CRNN forward pass each, and keeps single-pixel det noise out of
+    // the output entirely. 0 disables the filter (keeps every detected box).
+    // Deliberately small: on the bundled SROIE receipt the smallest genuine
+    // text line is orders of magnitude above it.
+    float minDetBoxArea = 20.0f;
     // Drop lines whose recognition confidence is below this bar (Paddle
     // drop_score / ppu minimumConfidence). Symbol-only text uses bar+0.3.
     // 0 disables filtering (legacy RapidOcrOnnx keeps every box).
     float minimumConfidence = 0.5f;
+    // Recover inter-word spaces the greedy CTC decode swallows: when the
+    // space class (the dictionary's trailing " " key) is a strong runner-up
+    // at an emitted character's timestep, emit the space too. Mirrors
+    // ppu-paddle-ocr's spaceRecovery (default off there too). Off by default
+    // because it can add spurious spaces in dense symbol runs — and because
+    // this project's CTC output is already compared byte-for-byte against
+    // fixtures, so it must stay opt-in. See Recognizer::setSpaceRecovery.
+    bool spaceRecovery = false;
     // Populate LinePrediction::words with a polygon per word (per character for
     // CJK, which has no spaces to split on). Off by default: the spans it needs
     // are nearly free to compute, but carrying them for every line of every page
