@@ -154,9 +154,35 @@ arboOCR ships three CMake presets. Pick the one matching your target.
 
 | Preset | Platform | Dependency source |
 |---|---|---|
-| `windows-x64` | Windows, MSVC | [vcpkg](https://vcpkg.io) |
-| `linux-x64` | Linux x86_64 | vcpkg |
+| `windows-x64` | Windows, MSVC | [vcpkg](https://vcpkg.io) (ORT 1.23.2) |
+| `linux-x64` | Linux x86_64 | vcpkg (ORT 1.23.2) |
 | `jetson` | aarch64 (Jetson/embedded) | apt + vendored onnxruntime |
+
+`windows-x64` / `linux-x64` default to onnxruntime **1.23.2** from vcpkg.
+For **1.28.0** (official Microsoft prebuilt — vcpkg has no 1.28 port),
+add `-DARBOOCR_ORT_VERSION=1.28.0` to any preset configure line. It downloads
+the pinned release archive for your OS at configure time (SHA256-verified)
+and links its headers + runtime, so no source changes are needed:
+
+```powershell
+$env:VCPKG_ROOT = "C:\vcpkg"
+cmake --preset windows-x64 -DARBOOCR_ORT_VERSION=1.28.0
+cmake --build build/windows-x64 --config Release
+```
+
+```bash
+export VCPKG_ROOT=/path/to/vcpkg
+cmake --preset linux-x64 -DARBOOCR_ORT_VERSION=1.28.0
+cmake --build build/linux-x64
+```
+
+Notes: the flag is opt-in (default stays 1.23.2, CI stays green), and it is
+incompatible with the `jetson` preset (Jetson keeps its own vendored flow
+below). Offline/air-gapped builds can point at a pre-downloaded archive
+instead of downloading: `-DARBOOCR_ORT_ARCHIVE_FILE=<path>` (exact archive
+name required, hash still verified). Packaging (`cmake/package_runtime.cmake`)
+needs no changes — the 1.28 archives ship `onnxruntime_providers_shared`,
+so the stock `SEARCH_DIRS` globs pick it up.
 
 ### Windows (vcpkg)
 

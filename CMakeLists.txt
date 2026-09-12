@@ -10,24 +10,59 @@ include(GNUInstallDirs)
 # System-deps (-DARBOOCR_USE_SYSTEM_DEPS=ON): apt OpenCV/CURL + vendored
 # onnxruntime headers, runtime lib from ARBOOCR_ORT_LIB_DIR (Jetson/aarch64
 # with a CUDA/TensorRT-enabled onnxruntime).
+# Prebuilt 1.28.0 (-DARBOOCR_ORT_VERSION=1.28.0): official Microsoft release
+# archives instead of the vcpkg 1.23.2 port — see cmake/ort_prebuilt.cmake.
+# Windows/Linux x64 only; cannot combine with ARBOOCR_USE_SYSTEM_DEPS.
 option(ARBOOCR_USE_SYSTEM_DEPS "Use apt packages + vendored onnxruntime (Jetson/aarch64)" OFF)
 set(ARBOOCR_ORT_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/vendor/onnxruntime/dist/include"
     CACHE PATH "onnxruntime C++ headers (system-deps mode)")
 set(ARBOOCR_ORT_LIB_DIR "${CMAKE_SOURCE_DIR}/vendor/onnxruntime/lib"
     CACHE PATH "Directory containing libonnxruntime.so (system-deps mode) — defaults to the vendored copy")
 
+# onnxruntime source: 1.23.2 = vcpkg port (default, CI stays green), 1.28.0 =
+# official prebuilt archives (opt-in — no vcpkg port exists past 1.23.2).
+set(ARBOOCR_ORT_VERSION "1.23.2" CACHE STRING "onnxruntime version: 1.23.2 (vcpkg) or 1.28.0 (official prebuilt)")
+set_property(CACHE ARBOOCR_ORT_VERSION PROPERTY STRINGS "1.23.2" "1.28.0")
+if(NOT ARBOOCR_ORT_VERSION STREQUAL "1.23.2" AND NOT ARBOOCR_ORT_VERSION STREQUAL "1.28.0")
+    message(FATAL_ERROR "ARBOOCR_ORT_VERSION=${ARBOOCR_ORT_VERSION} unsupported (want 1.23.2 or 1.28.0)")
+endif()
+set(ARBOOCR_ORT_PREBUILT OFF CACHE INTERNAL "ON when prebuilt ORT 1.28.0 is active")
+if(ARBOOCR_ORT_VERSION STREQUAL "1.28.0")
+    if(ARBOOCR_USE_SYSTEM_DEPS)
+        message(FATAL_ERROR "ARBOOCR_ORT_VERSION=1.28.0 cannot combine with ARBOOCR_USE_SYSTEM_DEPS=ON "
+            "(the prebuilt path replaces vcpkg ORT; Jetson keeps its own vendored flow)")
+    endif()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort_prebuilt.cmake)
+    # Reuse the system-deps wiring below (plain `onnxruntime` link + link dir +
+    # RPATH) with the prebuilt paths, so link/packaging/install need no
+    # further special cases. vcpkg still installs the unused 1.23.2 port
+    # (vcpkg.json is unchanged); the build just never finds or links it.
+    set(ARBOOCR_ORT_INCLUDE_DIR "${ARBOOCR_ORT_PREBUILT_ROOT}/include"
+        CACHE PATH "onnxruntime C++ headers (prebuilt 1.28.0 mode)" FORCE)
+    set(ARBOOCR_ORT_LIB_DIR "${ARBOOCR_ORT_PREBUILT_ROOT}/lib"
+        CACHE PATH "Directory containing the prebuilt onnxruntime 1.28.0 runtime" FORCE)
+    set(ARBOOCR_ORT_PREBUILT ON CACHE INTERNAL "ON when prebuilt ORT 1.28.0 is active" FORCE)
+endif()
+
 find_package(doctest CONFIG REQUIRED)
 find_package(cxxopts CONFIG REQUIRED)
 
-if(ARBOOCR_USE_SYSTEM_DEPS)
+if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
     if(NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE Release)
     endif()
-    find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-    find_package(CURL REQUIRED)
+    if(ARBOOCR_ORT_PREBUILT)
+        # Prebuilt 1.28.0: only onnxruntime leaves the vcpkg path; OpenCV and
+        # CURL still come from the vcpkg CONFIG packages.
+        find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
+        find_package(CURL CONFIG REQUIRED)
+    else()
+        find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+        find_package(CURL REQUIRED)
+    endif()
     if(ARBOOCR_ORT_LIB_DIR STREQUAL "" OR NOT EXISTS "${ARBOOCR_ORT_LIB_DIR}")
-        message(FATAL_ERROR "ARBOOCR_USE_SYSTEM_DEPS=ON needs libonnxruntime.so in ${ARBOOCR_ORT_LIB_DIR} "
-            "(vendor it there, or pass -DARBOOCR_ORT_LIB_DIR=<dir> to point elsewhere — see README)")
+        message(FATAL_ERROR "No onnxruntime runtime in ${ARBOOCR_ORT_LIB_DIR} "
+            "(system-deps: vendor it there, or pass -DARBOOCR_ORT_LIB_DIR=<dir> to point elsewhere — see README)")
     endif()
 else()
     find_package(onnxruntime CONFIG REQUIRED)
@@ -71,9 +106,14 @@ target_include_directories(arboOCR PUBLIC
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
 add_library(arboOCR::arboOCR ALIAS arboOCR)
 
-if(ARBOOCR_USE_SYSTEM_DEPS)
-    # Vendored ORT paths live in the source tree, so they cannot be exported
-    # verbatim; arboOCRConfig.cmake re-applies them for installed consumers.
+if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
+    # Vendored/prebuilt ORT paths live outside any CMake package, so they
+    # cannot be exported verbatim; arboOCRConfig.cmake re-applies them for
+    # installed consumers.
+    #
+    # Both archives lay headers flat (include/onnxruntime_cxx_api.h — no
+    # onnxruntime/ subdir like the vcpkg port), matching what the code
+    # includes, so no extra include shim is needed here.
     target_include_directories(arboOCR PUBLIC $<BUILD_INTERFACE:${ARBOOCR_ORT_INCLUDE_DIR}>)
     target_link_directories(arboOCR PUBLIC $<BUILD_INTERFACE:${ARBOOCR_ORT_LIB_DIR}>)
     target_link_libraries(arboOCR PUBLIC onnxruntime)
@@ -122,7 +162,7 @@ target_link_libraries(arboocr_tests PRIVATE arboOCR doctest::doctest)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_libraries(arboocr_tests PRIVATE stdc++fs)
 endif()
-if(ARBOOCR_USE_SYSTEM_DEPS)
+if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
     set_target_properties(arboocr_tests PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
@@ -144,9 +184,26 @@ add_custom_command(TARGET arboocr_tests POST_BUILD
 # Demo CLI.
 add_executable(arboocr_demo cli/arboocr_demo.cpp)
 target_link_libraries(arboocr_demo PRIVATE arboOCR cxxopts::cxxopts)
-if(ARBOOCR_USE_SYSTEM_DEPS)
+if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
     set_target_properties(arboocr_demo PROPERTIES
         INSTALL_RPATH "${ARBOOCR_ORT_LIB_DIR}" BUILD_WITH_INSTALL_RPATH TRUE)
+endif()
+if(ARBOOCR_ORT_PREBUILT)
+    # Copy the prebuilt ORT runtime next to every executable that loads it
+    # (demo + tests so ctest runs) — then package_runtime.cmake resolves it
+    # with the stock SEARCH_DIRS (binary-dir glob for
+    # onnxruntime_providers_*; GET_RUNTIME for onnxruntime.dll/.so via the
+    # import lib / link dir).
+    #
+    # Linux note: the copy is belt-and-braces — BUILD_WITH_INSTALL_RPATH on
+    # the prebuilt lib dir would already resolve it. But the explicit copy
+    # makes the tree relocatable and matches the Windows behavior.
+    foreach(_ort_exe arboocr_demo arboocr_tests)
+        add_custom_command(TARGET ${_ort_exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${ARBOOCR_ORT_PREBUILT_RUNTIME_FILES}
+                $<TARGET_FILE_DIR:${_ort_exe}>)
+    endforeach()
 endif()
 
 # Install + package export, so consumers can find_package(arboOCR CONFIG) and

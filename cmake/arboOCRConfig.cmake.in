@@ -11,11 +11,19 @@ include(CMakeFindDependencyMacro)
 #   CURL        : not in any public header, but linked PUBLIC, so the imported
 #                 target still names CURL::libcurl and it must resolve.
 # doctest/cxxopts are test- and CLI-only and are deliberately not re-found.
-if(@ARBOOCR_USE_SYSTEM_DEPS@)
-    find_dependency(OpenCV)
-    find_dependency(CURL)
-    # onnxruntime is a vendored .so in this mode, not a package: the include and
-    # link directories recorded at build time are re-applied below.
+if(@ARBOOCR_USE_SYSTEM_DEPS@ OR @ARBOOCR_ORT_PREBUILT@)
+    if(@ARBOOCR_ORT_PREBUILT@)
+        # Prebuilt 1.28.0: only onnxruntime leaves the vcpkg path; OpenCV and
+        # CURL still come from the vcpkg CONFIG packages.
+        find_dependency(OpenCV CONFIG)
+        find_dependency(CURL CONFIG)
+    else()
+        find_dependency(OpenCV)
+        find_dependency(CURL)
+    endif()
+    # onnxruntime is a vendored/prebuilt binary in these modes, not a package:
+    # the include and link directories recorded at build time are re-applied
+    # below.
 else()
     find_dependency(onnxruntime CONFIG)
     find_dependency(OpenCV CONFIG)
@@ -24,7 +32,7 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/arboOCRTargets.cmake")
 
-if(@ARBOOCR_USE_SYSTEM_DEPS@)
+if(@ARBOOCR_USE_SYSTEM_DEPS@ OR @ARBOOCR_ORT_PREBUILT@)
     set_property(TARGET arboOCR::arboOCR APPEND PROPERTY
         INTERFACE_INCLUDE_DIRECTORIES "@ARBOOCR_ORT_INCLUDE_DIR@")
     set_property(TARGET arboOCR::arboOCR APPEND PROPERTY
