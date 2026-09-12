@@ -196,10 +196,15 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         return result;
     }
 
+    // ponytail: stage timings go to --log-level debug only; no struct/JSON
+    // change, zero overhead when silent (chrono reads only).
+    float detMs = 0.0f, cropMs = 0.0f, clsMs = 0.0f, recMs = 0.0f;
     try {
         cv::Mat prepped = config_.useClahe ? applyClahe(src) : src;
         ScaleParam scale = getScaleParam(prepped, config_.detLimitSideLen);
+        const auto tDet0 = std::chrono::steady_clock::now();
         auto textBoxes = detector_.getTextBoxes(prepped, scale, config_.detBoxThresh, config_.detThresh, config_.detUnclipRatio);
+        detMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tDet0).count();
         if (config_.splitOvermerged) {
             textBoxes = expandOvermergedBoxes(textBoxes, prepped);
         }
@@ -213,12 +218,15 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         // recomputing the conditions later, which would drift.
         std::vector<char> wasTransposed(textBoxes.size(), 0);
         std::vector<char> wasRotated180(textBoxes.size(), 0);
+        const auto tCrop0 = std::chrono::steady_clock::now();
         for (size_t i = 0; i < textBoxes.size(); i++) {
             bool transposed = false;
             partImages.push_back(getRotateCropImage(prepped, textBoxes[i].boxPoint, &transposed));
             wasTransposed[i] = transposed ? 1 : 0;
         }
+        cropMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tCrop0).count();
 
+        const auto tCls0 = std::chrono::steady_clock::now();
         auto angles = classifier_.getAngles(partImages, config_.useAngleCls, /*mostAngle=*/false);
         for (size_t i = 0; i < partImages.size(); i++) {
             if (angles[i].index == 1) {
@@ -226,8 +234,11 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
                 wasRotated180[i] = 1;
             }
         }
+        clsMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tCls0).count();
 
+        const auto tRec0 = std::chrono::steady_clock::now();
         auto textLines = recognizer_.getTextLines(partImages);
+        recMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tRec0).count();
 
         for (size_t i = 0; i < textBoxes.size(); i++) {
             const float recScore = (i < textLines.size())
@@ -258,6 +269,14 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
         }
         sortLinesReadingOrder(result.lines);
         log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");
+        // Sum of stage spans can slightly exceed elapsedMs (nesting-free here,
+        // but chrono reads are not atomic with inference) — treat as budget
+        // shares, not an exact partition.
+        log(LogLevel::Debug, "stages: det=" + std::to_string(detMs)
+            + "ms crop=" + std::to_string(cropMs)
+            + "ms cls=" + std::to_string(clsMs)
+            + "ms rec=" + std::to_string(recMs)
+            + "ms boxes=" + std::to_string(textBoxes.size()));
     } catch (const std::exception& ex) {
         log(LogLevel::Error, std::string("recognize failed: ") + ex.what());
         result.lines.clear();

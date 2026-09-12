@@ -5,6 +5,7 @@
 #include "arboOCR/recognizer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <numeric>
@@ -12,6 +13,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "arboOCR/logging.hpp"
 #include "arboOCR/ocr_utils.hpp"
 #include "ort_provider_utils.hpp"
 
@@ -320,7 +322,12 @@ std::vector<float> Recognizer::buildBatchTensor(const std::vector<cv::Mat>& resi
 
 std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat>& resizedCrops, int batchWidth) {
     int batchSize = static_cast<int>(resizedCrops.size());
+    // ponytail: rec sub-stage timings go to --log-level debug only; chrono
+    // reads are the only overhead when silent.
+    const auto tBuild0 = std::chrono::steady_clock::now();
     std::vector<float> batchInput = buildBatchTensor(resizedCrops, batchWidth);
+    const float buildMs = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - tBuild0).count();
 
     std::array<int64_t, 4> inputShape{batchSize, 3, kDstHeight, batchWidth};
     auto memInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
@@ -329,8 +336,11 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
 
     std::vector<const char*> inputNames = {inputNamesPtr_.front().get()};
     std::vector<const char*> outputNames = {outputNamesPtr_.front().get()};
+    const auto tInfer0 = std::chrono::steady_clock::now();
     auto outputTensors = session_->Run(
         Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor, 1, outputNames.data(), 1);
+    const float inferMs = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - tInfer0).count();
 
     auto outShape = outputTensors[0].GetTensorTypeAndShapeInfo().GetShape();
     if (outShape.size() < 3 || outShape[0] <= 0 || outShape[1] <= 0 || outShape[2] <= 0) {
@@ -345,6 +355,7 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
     int64_t outCount = outBatch * perItemCount;
     float* raw = outputTensors.front().GetTensorMutableData<float>();
 
+    const auto tDecode0 = std::chrono::steady_clock::now();
     std::vector<RawTextLine> results;
     results.reserve(resizedCrops.size());
     // CTC-decode the full padded width per row, unconditionally — no
@@ -377,6 +388,13 @@ std::vector<RawTextLine> Recognizer::runBatchInference(const std::vector<cv::Mat
     while (results.size() < resizedCrops.size()) {
         results.push_back({"", {}}); // guard: model returned fewer rows than requested
     }
+    const float decodeMs = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - tDecode0).count();
+    log(LogLevel::Debug, "rec-batch: n=" + std::to_string(batchSize)
+        + " build=" + std::to_string(buildMs)
+        + "ms infer=" + std::to_string(inferMs)
+        + "ms decode=" + std::to_string(decodeMs)
+        + "ms w=" + std::to_string(batchWidth));
     return results;
 }
 
