@@ -106,6 +106,16 @@ target_include_directories(arboOCR PUBLIC
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
 add_library(arboOCR::arboOCR ALIAS arboOCR)
 
+# PIC when the bindings are on: libarboOCR.a is linked into the _arboocr shared
+# module, and ELF will not accept non-PIC objects there ("relocation R_X86_64_
+# PC32 against symbol ... can not be used when making a shared object").
+# Set on the archives rather than CMAKE_POSITION_INDEPENDENT_CODE, so a
+# C++-only build is unchanged. Windows ignores this — PE has no such rule.
+if(ARBOOCR_BUILD_PYTHON)
+    set_target_properties(arboOCR arboocr_clipper PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(ARBOOCR_USE_SYSTEM_DEPS OR ARBOOCR_ORT_PREBUILT)
     # Vendored/prebuilt ORT paths live outside any CMake package, so they
     # cannot be exported verbatim; arboOCRConfig.cmake re-applies them for
