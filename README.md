@@ -88,13 +88,26 @@ Engine facade via pybind11 — same native backends as C++. Off by default
 headers and want `import arboocr`.
 
 ```powershell
-cmake --preset windows-x64 -DARBOOCR_BUILD_PYTHON=ON
+# PYBIND11_FINDPYTHON=ON is not optional. Without it pybind11 takes its legacy
+# FindPythonLibs path and honours a cached PYTHON_EXECUTABLE instead of the
+# interpreter you asked for — observed as a 3.13 configure producing
+# _arboocr.cp311-win_amd64.pyd, and as a wrapper importing names the stale
+# extension never exported. The -U flags drop Python vars cached by an earlier
+# configure, so configure in a fresh build dir or pass them as shown.
+cmake --preset windows-x64 -DARBOOCR_BUILD_PYTHON=ON -DPYBIND11_FINDPYTHON=ON `
+  -DPython3_EXECUTABLE=(Get-Command python).Source -U "_Python3_*" -U "PYTHON_*"
 cmake --build build/windows-x64 --config Release --target _arboocr
 $env:PYTHONPATH = "python"
 # Windows: DLL path is auto-probed for build/windows-x64/vcpkg_installed/.../bin;
 # override with $env:ARBOOCR_DLL_DIR = "...\vcpkg_installed\x64-windows\bin" if needed.
 python -c "from arboocr import Engine, EngineConfig; print(EngineConfig().model_type)"
 ```
+
+The output is ABI-tagged (`_arboocr.cp313-win_amd64.pyd`) and dropped into
+`python/arboocr/`. One file per interpreter version, so builds for several
+Pythons coexist there and each interpreter loads its own. Rebuild whenever the
+bindings change — a stale extension for the running interpreter fails at
+`import arboocr`, not at build time.
 
 ```python
 from arboocr import Engine, EngineConfig, to_json

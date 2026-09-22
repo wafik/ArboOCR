@@ -71,7 +71,8 @@ jobs:
             autoconf-archive \
             automake \
             libtool \
-            libtool-bin
+            libtool-bin \
+            python3-dev
 
       # 3. Setup vcpkg. Its built-in "x-gha" binary caching backend has been
       # removed upstream (silently no-ops every run, confirmed in logs), so
@@ -120,9 +121,11 @@ jobs:
       # 66-80 min of full debug+release source builds; release-only roughly
       # halves it, and the 60 min timeout turns any future hang into a loud
       # failure instead of a 6-hour billing surprise.
+      # PYBIND11_FINDPYTHON is required, see README: without it pybind11 falls
+      # back to its legacy finder and can target a cached PYTHON_EXECUTABLE.
       - name: Configure
         timeout-minutes: 60
-        run: cmake --preset linux-x64 "-DVCPKG_OVERLAY_TRIPLETS=$RUNNER_TEMP/vcpkg-triplets"
+        run: cmake --preset linux-x64 "-DVCPKG_OVERLAY_TRIPLETS=$RUNNER_TEMP/vcpkg-triplets" -DARBOOCR_BUILD_PYTHON=ON -DPYBIND11_FINDPYTHON=ON
 
       # 5. Hapus sampah kompilasi untuk menghemat space sebelum build utama
       - name: Clean vcpkg buildtrees
@@ -133,6 +136,16 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/linux-x64 -C Release --output-on-failure
+
+      # The smoke suite skips itself when the extension fails to import, so a
+      # broken binding would read as green. Guard the import explicitly first:
+      # the wrapper imports names the extension must actually export, which is
+      # what a stale or mismatched _arboocr breaks.
+      - name: Test Python bindings
+        run: |
+          export PYTHONPATH=python
+          python3 -c "import arboocr; print('bindings OK', arboocr.__version__)"
+          python3 -m unittest discover -s python/tests -v
 
       # Verify the install/export actually produces a usable package. Windows
       # covers this locally; Linux is where the vcpkg include paths differ.
@@ -197,9 +210,13 @@ jobs:
           ) | Set-Content -Path (Join-Path $dir "x64-linux.cmake") -Encoding ascii
         shell: pwsh
 
+      # -U drops Python vars a previous configure cached, which otherwise
+      # override -DPython3_EXECUTABLE. PYBIND11_FINDPYTHON is required; see
+      # README. This job previously built C++ only, so a stale cp312 extension
+      # sat in python/arboocr/ for two months without any signal.
       - name: Configure
         timeout-minutes: 60
-        run: cmake --preset windows-x64 "-DVCPKG_OVERLAY_TRIPLETS=$env:RUNNER_TEMP/vcpkg-triplets"
+        run: cmake --preset windows-x64 "-DVCPKG_OVERLAY_TRIPLETS=$env:RUNNER_TEMP/vcpkg-triplets" -DARBOOCR_BUILD_PYTHON=ON -DPYBIND11_FINDPYTHON=ON -U "PYTHON_*"
 
       - name: Clean vcpkg buildtrees (Windows)
         run: Remove-Item -Recurse -Force build\windows-x64\vcpkg_installed\*\buildtrees\* -ErrorAction SilentlyContinue
@@ -209,6 +226,16 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/windows-x64 -C Release --output-on-failure
+
+      # Fails when arboocr.*.pyd imports but the wrapper needs a name it never
+      # exported, which is how the stale extension above surfaced. The pyd is
+      # gitignored, so CI is the only place this is checked before a user
+      # rebuilds by hand. No ARBOOCR_DLL_DIR: DLLs next to the .pyd resolve.
+      - name: Test Python bindings
+        run: |
+          $env:PYTHONPATH = "python"
+          python -c "import arboocr; print('bindings OK', arboocr.__version__)"
+          python -m unittest discover -s python/tests -v
 
       - name: Save vcpkg cache
         if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
