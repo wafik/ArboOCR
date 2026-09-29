@@ -58,9 +58,12 @@ if(ARBOOCR_WITH_DOCLAYOUT)
 endif()
 ```
 
-Library links `PRIVATE arboDocLayout` only when the option is ON.
-All doclayout code in `src/` is guarded by a compile definition
-(`ARBOOCR_HAS_DOCLAYOUT`) so the OFF build compiles none of it.
+Library links `arboDocLayout` **PUBLIC** only when the option is ON — the
+public header `engine.hpp` includes `arboDocLayout/engine.hpp` under the
+define, so tests/demo need the include path too. The define
+(`ARBOOCR_HAS_DOCLAYOUT`) is PUBLIC as well, so tests see the gated config
+field. All doclayout code in `src/` is guarded by that define so the OFF
+build compiles none of it.
 
 ### arbo-doclayout tweak (small, separate commit)
 
