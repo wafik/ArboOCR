@@ -184,6 +184,32 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     }
 }
 
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+bool Engine::tryOrderWithDocLayout(const cv::Mat& src, std::vector<LinePrediction>& lines) {
+    if (docLayoutFailed_ || src.empty() || lines.empty()) return false;
+    try {
+        if (!docLayout_) {
+            // Empty config = PP-DocLayoutV2 defaults; model resolves from
+            // ~/.cache/arbo-doclayout, downloading on first use. The ctor
+            // throws if that fails — caught below.
+            docLayout_ = std::make_unique<arbo::doclayout::Engine>(arbo::doclayout::EngineConfig{});
+        }
+        const arbo::doclayout::PageLayout page = docLayout_->analyze(src);
+        std::vector<LayoutBlock> blocks;
+        blocks.reserve(page.boxes.size());
+        for (const auto& b : page.boxes) {
+            blocks.push_back({b.label, b.x1, b.y1, b.x2, b.y2});
+        }
+        return orderLinesByBlocks(lines, blocks);  // false -> caller falls back
+    } catch (const std::exception& ex) {
+        log(LogLevel::Error, std::string("doclayout disabled for this engine: ") + ex.what());
+        docLayout_.reset();
+        docLayoutFailed_ = true;
+        return false;
+    }
+}
+#endif
+
 PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageName) {
     auto t0 = std::chrono::steady_clock::now();
     PagePrediction result;
@@ -291,7 +317,13 @@ PagePrediction Engine::runPipeline(const cv::Mat& src, const std::string& imageN
             }
             result.lines.push_back(std::move(line));
         }
-        sortLinesReadingOrder(result.lines);
+        bool ordered = false;
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+        ordered = config_.useDocLayout && tryOrderWithDocLayout(src, result.lines);
+#endif
+        if (!ordered) {
+            sortLinesReadingOrder(result.lines);
+        }
         log(LogLevel::Debug, "recognize: " + std::to_string(result.lines.size()) + " lines");
     } catch (const std::exception& ex) {
         log(LogLevel::Error, std::string("recognize failed: ") + ex.what());
