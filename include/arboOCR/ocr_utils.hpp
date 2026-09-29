@@ -80,6 +80,26 @@ std::vector<RawTextBox> expandOvermergedBoxes(const std::vector<RawTextBox>& box
 /// resolution the page was scanned at.
 void sortLinesReadingOrder(std::vector<LinePrediction>& lines);
 
+/// One document layout region: label + axis-aligned box in source-image
+/// coordinates. Deliberately not arboDocLayout::LayoutBox so this module —
+/// and its tests — stay independent of the optional doclayout dependency.
+struct LayoutBlock {
+    std::string label;
+    float x1 = 0.f, y1 = 0.f, x2 = 0.f, y2 = 0.f;
+};
+
+/// Reorder `lines` into layout-block reading order: each line joins the
+/// block covering the largest share of its area; lines touching no block
+/// (orphans) join the nearest block by center distance. Blocks emit in
+/// vector order (the layout model already sorts by reading order), except
+/// labels starting "header" move to the front and "footer" to the back
+/// (relative order kept in both groups). Lines inside a block sort by
+/// top edge, then left edge. Returns false when `blocks` is empty — the
+/// caller falls back to sortLinesReadingOrder — and then leaves `lines`
+/// untouched. Never throws.
+bool orderLinesByBlocks(std::vector<LinePrediction>& lines,
+                        const std::vector<LayoutBlock>& blocks);
+
 /// CTC post: insert spaces where horizontal gaps between emitted tokens look
 /// like whitespace (columnar receipts). `positions` are 0..1 fractions of the
 /// crop width (timestep centers). Optional `scores` and `spans` stay
