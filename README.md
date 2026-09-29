@@ -437,6 +437,24 @@ Off by default — adds per-image CPU cost and isn't universally beneficial
 is enhanced; recognizer crops are taken from that same enhanced image for
 consistency, but the enhancement itself only ever runs once per page.
 
+### Layout-block reading order (optional)
+
+The default sort is geometric (centroid row, then x) and interleaves
+multi-column pages. The sibling [`arbo-doclayout`](../arbo-doclayout)
+library detects layout blocks in reading order; bridge it in with two
+opt-in gates, both **off by default**:
+
+```bash
+cmake --preset windows-x64 -DARBOOCR_WITH_DOCLAYOUT=ON   # gate 1: build
+```
+
+```cpp
+cfg.useDocLayout = true; // gate 2: runtime — ~+440 ms/image, 203 MB model once
+```
+
+Without gate 1 the code does not exist; without gate 2 it never runs.
+On any layout failure the engine falls back to the default sort.
+
 ### Accuracy defaults (read this if you upgrade)
 
 These defaults changed in a recent accuracy cycle. **Impact is large** on
@@ -452,6 +470,7 @@ If you pin config or re-implement the pipeline yourself, note every item.
 | CTC post | greedy only | **gap→space + fullwidth→ASCII** | Spaces injected where CTC timesteps show wide gaps (columnar fields). Fullwidth punctuation (e.g. `：`) maps to ASCII on non-CJK text. Always on in the recognizer. |
 | `minimumConfidence` | (none) | **`0.5`** | Drops low-confidence lines (Paddle `drop_score`). Pure symbol lines need **0.8**. Set `0` to keep every box (legacy). |
 | `splitOvermerged` | n/a | **`false`** | Optional ink-gap split of wide fused det boxes. **Off** by default — aggressive split *lost* ~1 pt on the smoke set. Enable only when det clearly fuses side-by-side fields. |
+| `useDocLayout` | n/a | **`false`** | Order lines by sibling [arbo-doclayout](../arbo-doclayout) blocks — fixes multi-column reading order. Requires building with `-DARBOOCR_WITH_DOCLAYOUT=ON`. Costs ~+440 ms/image, +85 MB RSS, one-time 203 MB model download; falls back to the centroid sort on any failure. |
 | `LinePrediction.score` | det-ish / unclear | **rec mean CTC conf** | New `detScore` holds the detector box score. JSON / Python: `score` + `det_score`. |
 | CLI `--model-type` | medium | **small** | Matches library default. |
 
