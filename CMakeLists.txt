@@ -70,6 +70,16 @@ else()
     find_package(CURL CONFIG REQUIRED)
 endif()
 
+# Optional bridge to the sibling arbo-doclayout library (block layout for
+# reading order). OFF: zero code, zero link — build identical to stock.
+option(ARBOOCR_WITH_DOCLAYOUT "Link sibling arbo-doclayout for layout-block reading order" OFF)
+set(ARBOOCR_DOCLAYOUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../arbo-doclayout"
+    CACHE PATH "Path to arbo-doclayout sources")
+if(ARBOOCR_WITH_DOCLAYOUT)
+    set(ARBODOCLAYOUT_BUILD_TESTS OFF CACHE BOOL "Build arbo-doclayout tests and demo" FORCE)
+    add_subdirectory("${ARBOOCR_DOCLAYOUT_DIR}" "${CMAKE_BINARY_DIR}/arbo-doclayout")
+endif()
+
 # Vendored Clipper (polygon offset for unClipBox). Exported alongside arboOCR
 # because a static library that links another static library leaves those
 # symbols unresolved for the consumer; clipper.hpp itself stays private
@@ -104,6 +114,15 @@ target_include_directories(arboOCR PUBLIC
 # spent usefully. Adding a new opencv2/<module> include means adding the
 # component here and the feature in vcpkg.json — the build fails first.
 target_link_libraries(arboOCR PUBLIC ${OpenCV_LIBS} CURL::libcurl arboocr_clipper)
+if(ARBOOCR_WITH_DOCLAYOUT)
+    # BUILD_INTERFACE: arboOCR is usually exported (install(EXPORT
+    # arboOCRTargets) below) and CMake refuses to export a target whose link
+    # interface names a target outside the export set. The sibling is a
+    # build-tree bridge only, so keep it out of the installed interface.
+    # Tests and the demo still inherit the sibling's include dirs in-tree.
+    target_link_libraries(arboOCR PUBLIC $<BUILD_INTERFACE:arboDocLayout>)
+    target_compile_definitions(arboOCR PUBLIC ARBOOCR_HAS_DOCLAYOUT)
+endif()
 add_library(arboOCR::arboOCR ALIAS arboOCR)
 
 # PIC when the bindings are on: libarboOCR.a is linked into the _arboocr shared
