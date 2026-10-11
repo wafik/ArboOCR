@@ -13,6 +13,18 @@
 #     https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz
 #     SHA256 A3E1B79D7BB1BF09696CE675F49E4064E6C81F6202B8225624FFF0E93F8D6407
 #
+# GPU flavor (-DARBOOCR_ORT_GPU=ON, declared in CMakeLists.txt) swaps in the
+# CUDA 13 archives for the same version — same layout (include/ + lib/), plus
+# the CUDA/TensorRT provider libraries. cuda12 archives exist upstream too;
+# add them to this table when someone actually needs one.
+#
+#   Windows x64 GPU: onnxruntime-win-x64-gpu_cuda13-1.28.0.zip
+#     https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-gpu_cuda13-1.28.0.zip
+#     SHA256 137F0822A4923B1D84D3E09496E0792EBBB221EB3A61A0657F71A12AB68AB1E2
+#   Linux x64 GPU:   onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz
+#     https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz
+#     SHA256 84D28F27589090B280D4312743EFD3D450CD4AC7D1E1D75E7D9076D9637BF9DE
+#
 # A DLL-swap experiment already proved the 1.28.0 runtime safe with this
 # codebase (1.23.2 headers + 1.28.0 DLLs: 6/6 byte-identical outputs), so no
 # source changes are needed — only build/packaging wiring, which is what this
@@ -39,15 +51,29 @@ set(_ORT_PREBUILT_BASE_URL
     "https://github.com/microsoft/onnxruntime/releases/download/v${ARBOOCR_ORT_PREBUILT_VERSION}")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(_ORT_ARCHIVE_NAME "onnxruntime-win-x64-${ARBOOCR_ORT_PREBUILT_VERSION}.zip")
-    set(_ORT_ARCHIVE_SHA256
-        "ABEF733DACBE2F571547A7150B479B5CB9CC0DF22F96C24983A42CADB1B4F8BC")
-    set(_ORT_ROOT_DIR_NAME "onnxruntime-win-x64-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    if(ARBOOCR_ORT_GPU)
+        set(_ORT_ARCHIVE_NAME "onnxruntime-win-x64-gpu_cuda13-${ARBOOCR_ORT_PREBUILT_VERSION}.zip")
+        set(_ORT_ARCHIVE_SHA256
+            "137F0822A4923B1D84D3E09496E0792EBBB221EB3A61A0657F71A12AB68AB1E2")
+        set(_ORT_ROOT_DIR_NAME "onnxruntime-win-x64-gpu_cuda13-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    else()
+        set(_ORT_ARCHIVE_NAME "onnxruntime-win-x64-${ARBOOCR_ORT_PREBUILT_VERSION}.zip")
+        set(_ORT_ARCHIVE_SHA256
+            "ABEF733DACBE2F571547A7150B479B5CB9CC0DF22F96C24983A42CADB1B4F8BC")
+        set(_ORT_ROOT_DIR_NAME "onnxruntime-win-x64-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    endif()
 else()
-    set(_ORT_ARCHIVE_NAME "onnxruntime-linux-x64-${ARBOOCR_ORT_PREBUILT_VERSION}.tgz")
-    set(_ORT_ARCHIVE_SHA256
-        "A3E1B79D7BB1BF09696CE675F49E4064E6C81F6202B8225624FFF0E93F8D6407")
-    set(_ORT_ROOT_DIR_NAME "onnxruntime-linux-x64-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    if(ARBOOCR_ORT_GPU)
+        set(_ORT_ARCHIVE_NAME "onnxruntime-linux-x64-gpu_cuda13-${ARBOOCR_ORT_PREBUILT_VERSION}.tgz")
+        set(_ORT_ARCHIVE_SHA256
+            "84D28F27589090B280D4312743EFD3D450CD4AC7D1E1D75E7D9076D9637BF9DE")
+        set(_ORT_ROOT_DIR_NAME "onnxruntime-linux-x64-gpu_cuda13-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    else()
+        set(_ORT_ARCHIVE_NAME "onnxruntime-linux-x64-${ARBOOCR_ORT_PREBUILT_VERSION}.tgz")
+        set(_ORT_ARCHIVE_SHA256
+            "A3E1B79D7BB1BF09696CE675F49E4064E6C81F6202B8225624FFF0E93F8D6407")
+        set(_ORT_ROOT_DIR_NAME "onnxruntime-linux-x64-${ARBOOCR_ORT_PREBUILT_VERSION}")
+    endif()
 endif()
 
 # Offline escape hatch: point at a local copy instead of downloading.
@@ -118,6 +144,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(ARBOOCR_ORT_PREBUILT_RUNTIME_FILES
         "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/onnxruntime.dll"
         "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/onnxruntime_providers_shared.dll")
+    if(ARBOOCR_ORT_GPU)
+        # GPU archive: CUDA + TensorRT providers (they ship alongside shared).
+        list(APPEND ARBOOCR_ORT_PREBUILT_RUNTIME_FILES
+            "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/onnxruntime_providers_cuda.dll"
+            "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/onnxruntime_providers_tensorrt.dll")
+    endif()
     foreach(_ort_dll IN LISTS ARBOOCR_ORT_PREBUILT_RUNTIME_FILES)
         if(NOT EXISTS "${_ort_dll}")
             message(FATAL_ERROR "ort-prebuilt: missing ${_ort_dll}")
@@ -132,10 +164,19 @@ else()
     set(ARBOOCR_ORT_PREBUILT_RUNTIME_FILES
         "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/libonnxruntime.so.1.28.0"
         "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/libonnxruntime_providers_shared.so")
+    if(ARBOOCR_ORT_GPU)
+        list(APPEND ARBOOCR_ORT_PREBUILT_RUNTIME_FILES
+            "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/libonnxruntime_providers_cuda.so"
+            "${ARBOOCR_ORT_PREBUILT_ROOT}/lib/libonnxruntime_providers_tensorrt.so")
+    endif()
     foreach(_ort_so IN LISTS ARBOOCR_ORT_PREBUILT_RUNTIME_FILES)
         if(NOT EXISTS "${_ort_so}")
             message(FATAL_ERROR "ort-prebuilt: missing ${_ort_so}")
         endif()
     endforeach()
 endif()
-message(STATUS "ort-prebuilt: onnxruntime ${ARBOOCR_ORT_PREBUILT_VERSION} ready at ${ARBOOCR_ORT_PREBUILT_ROOT} (ORT_API_VERSION 28)")
+if(ARBOOCR_ORT_GPU)
+    message(STATUS "ort-prebuilt: onnxruntime ${ARBOOCR_ORT_PREBUILT_VERSION} GPU (cuda13) ready at ${ARBOOCR_ORT_PREBUILT_ROOT} (ORT_API_VERSION 28)")
+else()
+    message(STATUS "ort-prebuilt: onnxruntime ${ARBOOCR_ORT_PREBUILT_VERSION} ready at ${ARBOOCR_ORT_PREBUILT_ROOT} (ORT_API_VERSION 28)")
+endif()

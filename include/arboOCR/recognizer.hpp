@@ -226,8 +226,10 @@ private:
 
     void finalizeKeys(std::vector<std::string> rawKeys);
 
-    std::unique_ptr<Ort::Session> session_;
+    // env_ before session_: destroyed in reverse order, Env must outlive
+    // Session (see detector.hpp).
     Ort::Env env_{ORT_LOGGING_LEVEL_ERROR, "Recognizer"};
+    std::unique_ptr<Ort::Session> session_;
     Ort::SessionOptions sessionOptions_;
     std::vector<Ort::AllocatedStringPtr> inputNamesPtr_;
     std::vector<Ort::AllocatedStringPtr> outputNamesPtr_;

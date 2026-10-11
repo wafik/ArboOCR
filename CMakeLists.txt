@@ -12,6 +12,7 @@ include(GNUInstallDirs)
 # with a CUDA/TensorRT-enabled onnxruntime).
 # Prebuilt 1.28.0 (-DARBOOCR_ORT_VERSION=1.28.0): official Microsoft release
 # archives instead of the vcpkg 1.23.2 port — see cmake/ort_prebuilt.cmake.
+# Add -DARBOOCR_ORT_GPU=ON for the CUDA 13 archive (CUDA/TensorRT EP).
 # Windows/Linux x64 only; cannot combine with ARBOOCR_USE_SYSTEM_DEPS.
 option(ARBOOCR_USE_SYSTEM_DEPS "Use apt packages + vendored onnxruntime (Jetson/aarch64)" OFF)
 set(ARBOOCR_ORT_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/vendor/onnxruntime/dist/include"
@@ -27,6 +28,13 @@ if(NOT ARBOOCR_ORT_VERSION STREQUAL "1.23.2" AND NOT ARBOOCR_ORT_VERSION STREQUA
     message(FATAL_ERROR "ARBOOCR_ORT_VERSION=${ARBOOCR_ORT_VERSION} unsupported (want 1.23.2 or 1.28.0)")
 endif()
 set(ARBOOCR_ORT_PREBUILT OFF CACHE INTERNAL "ON when prebuilt ORT 1.28.0 is active")
+# GPU flavor of the prebuilt archive: CUDA13 build with the CUDA/TensorRT
+# provider libs (same version, same layout — only the archive and runtime
+# file list differ, see cmake/ort_prebuilt.cmake).
+option(ARBOOCR_ORT_GPU "Use the CUDA 13 GPU onnxruntime archive (needs ARBOOCR_ORT_VERSION=1.28.0)" OFF)
+if(ARBOOCR_ORT_GPU AND NOT ARBOOCR_ORT_VERSION STREQUAL "1.28.0")
+    message(FATAL_ERROR "ARBOOCR_ORT_GPU=ON requires ARBOOCR_ORT_VERSION=1.28.0 (the vcpkg 1.23.2 port is CPU-only)")
+endif()
 if(ARBOOCR_ORT_VERSION STREQUAL "1.28.0")
     if(ARBOOCR_USE_SYSTEM_DEPS)
         message(FATAL_ERROR "ARBOOCR_ORT_VERSION=1.28.0 cannot combine with ARBOOCR_USE_SYSTEM_DEPS=ON "

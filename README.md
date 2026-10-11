@@ -197,6 +197,54 @@ name required, hash still verified). Packaging (`cmake/package_runtime.cmake`)
 needs no changes — the 1.28 archives ship `onnxruntime_providers_shared`,
 so the stock `SEARCH_DIRS` globs pick it up.
 
+### GPU build (CUDA 13 / TensorRT)
+
+The CPU archives (and the vcpkg port) simply don't contain the CUDA/TensorRT
+provider libraries, so `--cuda` on those builds runs on CPU. Add
+`-DARBOOCR_ORT_GPU=ON` on top of the 1.28.0 flag to download the official
+`gpu_cuda13` archive of the same version instead — same layout, plus
+`onnxruntime_providers_cuda` / `onnxruntime_providers_tensorrt` (picked up by
+the same packaging glob). Configure fails if `ARBOOCR_ORT_GPU=ON` is combined
+with anything but `ARBOOCR_ORT_VERSION=1.28.0`, because the vcpkg 1.23.2 port
+is CPU-only:
+
+```powershell
+$env:VCPKG_ROOT = "C:\vcpkg"
+cmake --preset windows-x64 -DARBOOCR_ORT_VERSION=1.28.0 -DARBOOCR_ORT_GPU=ON
+cmake --build build/windows-x64 --config Release
+```
+
+**Runtime libraries (Windows).** The provider library loads CUDA / cuDNN /
+TensorRT DLLs from `PATH` at session creation; arboOCR does not ship them.
+The combo below is verified on an RTX 5060 Ti (Blackwell sm_120):
+
+| Component | Version | Notes |
+|---|---|---|
+| Driver | CUDA 13.x capable | `nvidia-smi` reports CUDA 13.3 on the test box |
+| CUDA runtime + cuDNN | 13.4.92 / 9.27.0.42 | pip wheels suffice; no toolkit install needed |
+| TensorRT | 10.x (tested 10.16.1.11) | TensorRT 11 renamed libraries ORT 1.28 looks for — stay on 10.x |
+
+Easiest source for those DLLs is the pip wheels (`onnxruntime-gpu` pulls the
+`nvidia-*` runtime/cuDNN wheels, `tensorrt-cu13` the TRT 10.16 libraries).
+Put their `bin` directories on `PATH` before running (PowerShell — adjust the
+site-packages root):
+
+```powershell
+$sp = "C:\path\to\venv\Lib\site-packages"
+$env:PATH = "$sp\nvidia\cu13\bin\x86_64;$sp\nvidia\cudnn\bin;$sp\tensorrt_libs;$env:PATH"
+
+.\build\windows-x64\Release\arboocr_demo.exe --image img.jpg --cuda      # CUDA EP
+.\build\windows-x64\Release\arboocr_demo.exe --image img.jpg --tensorrt  # TRT EP; first run builds and caches the engine (--trt-cache-dir)
+```
+
+Honest caveats, measured on that box with the receipt test fixture (31 lines):
+CPU ~370 ms, `--cuda` ~705 ms (per-op launch overhead dominates a model this
+small — CUDA wins on larger inputs/batches), `--tensorrt` warm ~60 ms. If the
+CUDA DLLs are missing from `PATH`, session creation fails with a provider load
+error at runtime, not at configure time — and a CPU-only ORT build reports
+`Backend: cpu` even when `--cuda` is passed (the provider is detected, not
+forced).
+
 ### Windows (vcpkg)
 
 ```powershell

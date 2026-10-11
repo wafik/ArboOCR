@@ -47,8 +47,11 @@ public:
     );
 
 private:
-    std::unique_ptr<Ort::Session> session_;
+    // Declaration order is load-bearing: members are destroyed in reverse
+    // order, and Ort requires Env to outlive Session. Session dtor with a
+    // freed Env is a use-after-free (AV'd under CUDA EP teardown).
     Ort::Env env_{ORT_LOGGING_LEVEL_ERROR, "Detector"};
+    std::unique_ptr<Ort::Session> session_;
     Ort::SessionOptions sessionOptions_;
     std::vector<Ort::AllocatedStringPtr> inputNamesPtr_;
     std::vector<Ort::AllocatedStringPtr> outputNamesPtr_;
