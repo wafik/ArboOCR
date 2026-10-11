@@ -54,7 +54,11 @@ void configureExecutionProviders(
     }
 
     if (useCuda) {
-        OrtCUDAProviderOptions cudaOptions;
+        // Value-init: this is a raw C struct with no field initializers —
+        // without {} the untouched fields (has_user_compute_stream,
+        // user_compute_stream, default_memory_type, ...) are indeterminate
+        // and get copied into the provider, crashing at random points later.
+        OrtCUDAProviderOptions cudaOptions{};
         cudaOptions.device_id = 0;
         cudaOptions.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchHeuristic;
         sessionOptions.AppendExecutionProvider_CUDA(cudaOptions);
