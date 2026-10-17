@@ -29,6 +29,9 @@ TEST_CASE("EngineConfig has sane defaults") {
     CHECK(cfg.intraOpNumThreads == 0); // 0 = ORT decides
     CHECK(cfg.interOpNumThreads == 0); // 0 = ORT decides
     CHECK(cfg.useClahe == false);
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+    CHECK(cfg.useDocLayout == false);
+#endif
     CHECK(cfg.splitOvermerged == false);
     CHECK(cfg.minDetBoxArea == doctest::Approx(20.0f)); // ppu's minimumAreaThreshold
     CHECK(cfg.minimumConfidence == doctest::Approx(0.5f));

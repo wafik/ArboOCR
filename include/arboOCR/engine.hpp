@@ -6,10 +6,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
+
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+#include <arboDocLayout/engine.hpp>
+#endif
 
 #include "arboOCR/classifier.hpp"
 #include "arboOCR/detector.hpp"
@@ -80,6 +85,14 @@ int detLimitSideLen = 960;
     // adds per-image CPU cost and isn't universally beneficial (can
     // amplify noise on already-good scans). See preprocess.hpp::applyClahe.
     bool useClahe = false;
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+    // Order result lines by the sibling arbo-doclayout model's blocks instead
+    // of the geometric centroid sort — fixes multi-column interleaving.
+    // Costs ~+440 ms/image and ~+85 MB RSS (203 MB model auto-downloaded on
+    // first use). Falls back to sortLinesReadingOrder on any failure.
+    // Only exists in builds configured with -DARBOOCR_WITH_DOCLAYOUT=ON.
+    bool useDocLayout = false;
+#endif
     // Split wide det boxes that look like two side-by-side fields (ink-gap
     // heuristic). Default off: on the SROIE smoke set, reading-order sort alone
     // closed most of the full-page gap (~87.7% → ~94.4%); aggressive split
@@ -250,6 +263,15 @@ private:
     Recognizer recognizer_;
     EngineConfig config_;
     std::string backend_ = "cpu";
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+    /// Laid out by arbo-doclayout when useDocLayout is set. Created lazily on
+    /// first use; a ctor failure (model missing/unreachable) flips
+    /// docLayoutFailed_ so the engine permanently falls back to the centroid
+    /// sort for the rest of the process — OCR keeps working either way.
+    bool tryOrderWithDocLayout(const cv::Mat& src, std::vector<LinePrediction>& lines);
+    std::unique_ptr<arbo::doclayout::Engine> docLayout_;
+    bool docLayoutFailed_ = false;
+#endif
 };
 
 } // namespace arbo::ocr

@@ -474,6 +474,106 @@ void sortLinesReadingOrder(std::vector<LinePrediction>& lines) {
 
 namespace {
 
+struct Bounds {
+    float x1, y1, x2, y2;
+};
+
+// Axis-aligned bounds of a line polygon; empty polygon collapses to zeros.
+Bounds lineBounds(const LinePrediction& l) {
+    float x1 = 1e9f, y1 = 1e9f, x2 = -1e9f, y2 = -1e9f;
+    for (const auto& p : l.polygon) {
+        x1 = std::min(x1, p.x);
+        y1 = std::min(y1, p.y);
+        x2 = std::max(x2, p.x);
+        y2 = std::max(y2, p.y);
+    }
+    if (x2 < x1) return {0.f, 0.f, 0.f, 0.f};
+    return {x1, y1, x2, y2};
+}
+
+// "header", "header_image", ... — PP-DocLayout header family.
+bool isHeaderLabel(const std::string& label) {
+    return label.rfind("header", 0) == 0;
+}
+
+} // namespace
+
+bool orderLinesByBlocks(std::vector<LinePrediction>& lines,
+                        const std::vector<LayoutBlock>& blocks) {
+    if (blocks.empty() || lines.empty()) return false;
+
+    // 1. Bucket: max (intersection / line area); orphans -> nearest center.
+    std::vector<std::vector<LinePrediction>> buckets(blocks.size());
+    std::vector<LinePrediction> orphans;
+    for (auto& l : lines) {
+        const Bounds b = lineBounds(l);
+        const float area = std::max(1.f, b.x2 - b.x1) * std::max(1.f, b.y2 - b.y1);
+        int best = -1;
+        float bestShare = 0.f;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const LayoutBlock& k = blocks[i];
+            const float iw = std::min(b.x2, k.x2) - std::max(b.x1, k.x1);
+            const float ih = std::min(b.y2, k.y2) - std::max(b.y1, k.y1);
+            if (iw > 0.f && ih > 0.f) {
+                const float share = iw * ih / area;
+                if (share > bestShare) {
+                    best = static_cast<int>(i);
+                    bestShare = share;
+                }
+            }
+        }
+        if (best >= 0) buckets[best].push_back(std::move(l));
+        else orphans.push_back(std::move(l));
+    }
+    for (auto& l : orphans) {
+        const Bounds b = lineBounds(l);
+        const float cx = (b.x1 + b.x2) * 0.5f, cy = (b.y1 + b.y2) * 0.5f;
+        int nearest = 0;
+        float bestD = 1e30f;
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const LayoutBlock& k = blocks[i];
+            const float kx = (k.x1 + k.x2) * 0.5f - cx;
+            const float ky = (k.y1 + k.y2) * 0.5f - cy;
+            const float d = kx * kx + ky * ky;
+            if (d < bestD) {
+                bestD = d;
+                nearest = static_cast<int>(i);
+            }
+        }
+        buckets[nearest].push_back(std::move(l));
+    }
+
+    // 2. Block order: vector order (= model reading order), headers front,
+    //    footers back; relative order preserved inside each group.
+    std::vector<size_t> headers, rest, footers;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        if (isHeaderLabel(blocks[i].label)) headers.push_back(i);
+        else if (blocks[i].label == "footer") footers.push_back(i);
+        else rest.push_back(i);
+    }
+
+    // 3. Emit: lines within a block by top edge, then left edge.
+    std::vector<LinePrediction> out;
+    out.reserve(lines.size());
+    auto appendBucket = [&](size_t i) {
+        auto& bucket = buckets[i];
+        std::sort(bucket.begin(), bucket.end(),
+                  [](const LinePrediction& a, const LinePrediction& b) {
+                      const Bounds ba = lineBounds(a), bb = lineBounds(b);
+                      return ba.y1 != bb.y1 ? ba.y1 < bb.y1 : ba.x1 < bb.x1;
+                  });
+        for (auto& l : bucket) out.push_back(std::move(l));
+    };
+    for (size_t i : headers) appendBucket(i);
+    for (size_t i : rest) appendBucket(i);
+    for (size_t i : footers) appendBucket(i);
+
+    lines = std::move(out);
+    return true;
+}
+
+namespace {
+
 // 0=letter-ish, 1=digit, 2=other — ASCII-first; multi-byte → letter-ish.
 int tokenClass(const std::string& tok) {
     if (tok.empty()) return 2;

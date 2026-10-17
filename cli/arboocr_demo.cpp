@@ -97,6 +97,10 @@ int main(int argc, char* argv[]) {
             cxxopts::value<std::string>()->default_value("models/trt_engines"))
         ("clahe", "Apply CLAHE contrast enhancement before detection (helps low-contrast/faded documents)",
             cxxopts::value<bool>()->default_value("false"))
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+        ("doclayout", "Order lines by arbo-doclayout blocks (multi-column pages; +~440 ms)",
+            cxxopts::value<bool>()->default_value("false"))
+#endif
         ("enable-cpu-mem-arena", "Leave ORT CPU memory arena on: faster, higher RSS (matches oar-ocr default)",
             cxxopts::value<bool>()->default_value("false"))
         ("json", "Print machine-readable JSON (only JSON on stdout; suppresses the human-readable lines)",
@@ -201,6 +205,9 @@ int main(int argc, char* argv[]) {
     cfg.useFp16 = result["fp16"].as<bool>();
     cfg.trtCacheDir = result["trt-cache-dir"].as<std::string>();
     cfg.useClahe = result["clahe"].as<bool>();
+#ifdef ARBOOCR_HAS_DOCLAYOUT
+    cfg.useDocLayout = result["doclayout"].as<bool>();
+#endif
     cfg.enableCpuMemArena = result["enable-cpu-mem-arena"].as<bool>();
     // --markdown detects `key | value` rows from the wide gap between words, so
     // it needs word boxes even when --word-boxes was not asked for.

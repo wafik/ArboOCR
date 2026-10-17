@@ -525,3 +525,82 @@ TEST_CASE("injectGapSpaces ignores a spans vector of the wrong length") {
     CHECK(pos.size() == 8);
     CHECK(spans.size() == 3);
 }
+
+namespace {
+LinePrediction makeLine(float x1, float y1, float x2, float y2, std::string text) {
+    LinePrediction l;
+    l.polygon = {{x1, y1}, {x2, y1}, {x2, y2}, {x1, y2}};
+    l.text = std::move(text);
+    return l;
+}
+
+std::vector<std::string> texts(const std::vector<LinePrediction>& lines) {
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+    for (const auto& l : lines) out.push_back(l.text);
+    return out;
+}
+} // namespace
+
+TEST_CASE("orderLinesByBlocks keeps two interleaved columns in block order") {
+    std::vector<LayoutBlock> blocks = {
+        {"text", 0, 0, 50, 100},
+        {"text", 50, 0, 100, 100},
+    };
+    // naive geometric order interleaves the columns:
+    std::vector<LinePrediction> lines = {
+        makeLine(5, 5, 45, 12, "L1"),
+        makeLine(55, 5, 95, 12, "R1"),
+        makeLine(5, 20, 45, 27, "L2"),
+        makeLine(55, 20, 95, 27, "R2"),
+    };
+    CHECK(orderLinesByBlocks(lines, blocks));
+    CHECK(texts(lines) == std::vector<std::string>{"L1", "L2", "R1", "R2"});
+}
+
+TEST_CASE("orderLinesByBlocks sends orphan line to nearest block center") {
+    std::vector<LayoutBlock> blocks = {
+        {"text", 0, 0, 40, 30},    // top-left
+        {"text", 60, 0, 100, 30},  // top-right
+    };
+    std::vector<LinePrediction> lines = {
+        makeLine(10, 60, 35, 70, "orphan"),  // overlaps nothing; nearer left
+        makeLine(5, 5, 35, 15, "L"),
+        makeLine(65, 5, 95, 15, "R"),
+    };
+    CHECK(orderLinesByBlocks(lines, blocks));
+    CHECK(texts(lines) == std::vector<std::string>{"L", "orphan", "R"});
+}
+
+TEST_CASE("orderLinesByBlocks emits header first and footer last") {
+    std::vector<LayoutBlock> blocks = {
+        {"footer", 0, 90, 100, 100},
+        {"text", 0, 30, 100, 80},
+        {"header", 0, 0, 100, 10},
+    };
+    std::vector<LinePrediction> lines = {
+        makeLine(5, 92, 95, 98, "F"),
+        makeLine(5, 35, 95, 45, "M"),
+        makeLine(5, 2, 95, 8, "H"),
+    };
+    CHECK(orderLinesByBlocks(lines, blocks));
+    CHECK(texts(lines) == std::vector<std::string>{"H", "M", "F"});
+}
+
+TEST_CASE("orderLinesByBlocks sorts lines inside one block top-to-bottom then left-to-right") {
+    std::vector<LayoutBlock> blocks = {{"text", 0, 0, 100, 100}};
+    std::vector<LinePrediction> lines = {
+        makeLine(5, 50, 95, 60, "third"),
+        makeLine(50, 10, 95, 20, "second"),
+        makeLine(5, 10, 45, 20, "first"),
+    };
+    CHECK(orderLinesByBlocks(lines, blocks));
+    CHECK(texts(lines) == std::vector<std::string>{"first", "second", "third"});
+}
+
+TEST_CASE("orderLinesByBlocks returns false on empty blocks and leaves lines untouched") {
+    std::vector<LayoutBlock> blocks;
+    std::vector<LinePrediction> lines = {makeLine(0, 0, 10, 10, "x")};
+    CHECK_FALSE(orderLinesByBlocks(lines, blocks));
+    CHECK(texts(lines) == std::vector<std::string>{"x"});
+}
